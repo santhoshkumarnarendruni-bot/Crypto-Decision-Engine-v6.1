@@ -74,7 +74,7 @@
 <div class="header">
   <div>
     <div class="title">Crypto Decision Engine <span style="color:var(--info)">v6.1</span></div>
-    <div class="version">Blended RTI Price · Bull/Bear Traps · Auto-Refresh · Fixed Projection</div>
+    
   </div>
   <div id="clockDisplay" style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);text-align:right;"></div>
 </div>
@@ -818,8 +818,7 @@ function renderResult(r, rti, product, price, target, rsi, vol){
   const spreadColor = rti.maxSpread > price*0.002 ? "var(--warn)" : "var(--yes)";
   const rtiBadge = `
     <div class="rti-badge">
-      <b style="color:var(--info)">RTI PRICE (blended)</b> · Sources: ${rti.sources.join(" + ")} (${rti.count}/3 exchanges)
-      &nbsp;·&nbsp; CB: ${rti.cbPrice?.toFixed(2)??'—'}
+      <b style="color:var(--info)"> CB: ${rti.cbPrice?.toFixed(2)??'—'}
       ${rti.krakenPrice?`&nbsp;·&nbsp; Kraken: ${rti.krakenPrice.toFixed(2)}`:''}
       ${rti.bitstampPrice?`&nbsp;·&nbsp; Bitstamp: ${rti.bitstampPrice.toFixed(2)}`:''}
       &nbsp;·&nbsp; <span style="color:${spreadColor}">Spread: $${rti.maxSpread.toFixed(2)}</span>
@@ -841,7 +840,7 @@ function renderResult(r, rti, product, price, target, rsi, vol){
     <div class="signal-box ${r.boxCls}">
       <div class="signal-title ${r.decisionCls}">${r.displayDecision}</div>
       <div class="entry-tag ${r.decisionCls}">${r.entryTiming}</div>
-      <div style="font-size:12px;color:var(--text);margin-bottom:8px;">${r.signalReason}</div>
+      <div style="font-size:10px;color:var(--text);margin-bottom:6px;">${r.signalReason}</div>
       <div class="metric-grid">
         <div class="metric-item">
           <div class="metric-label">FLIP RISK</div>
@@ -887,6 +886,9 @@ function renderResult(r, rti, product, price, target, rsi, vol){
     <hr class="divider">
 
     <!-- KEY METRICS -->
+<span class="val ${r.trend5Pos?"yes":"no"}">${r.trend5Pos?"▲":"▼"}</span>
+<span class="val ${r.trend10Pos?"yes":"no"}">${r.trend10Pos?"▲":"▼"}</span>
+<span class="val ${r.trend15Pos?"yes":"no"}">${r.trend15Pos?"▲":"▼"} </span> 
     <div class="row"><span class="lbl">RTI BLENDED PRICE</span><span class="val warn">${price.toFixed(4)}</span></div>
     <div class="row"><span class="lbl">TARGET</span><span class="val">${target.toFixed(4)}</span></div>
     <div class="row"><span class="lbl">PROJECTED SETTLEMENT</span><span class="val info">${r.projectedAvg.toFixed(4)}</span></div>
@@ -897,37 +899,12 @@ function renderResult(r, rti, product, price, target, rsi, vol){
       <span class="val ${r.targetMagnetZone?"warn":"yes"}">${r.targetMagnetZone?"⚠ TOO CLOSE":"✓ SAFE DIST"}</span></div>
     <div class="row"><span class="lbl">ATR (1-min candles)</span><span class="val muted">${r.atr.toFixed(4)}</span></div>
 
-    <hr class="divider">
+   
 
-    <!-- TREND SUMMARY -->
-    <div class="row"><span class="lbl">5m TREND</span>
-      <span class="val ${r.trend5Pos?"yes":"no"}">${r.trend5Pos?"▲":"▼"} ${r.trend5>0?"+":""}${r.trend5.toFixed(4)}</span></div>
-    <div class="row"><span class="lbl">10m TREND</span>
-      <span class="val ${r.trend10Pos?"yes":"no"}">${r.trend10Pos?"▲":"▼"} ${r.trend10>0?"+":""}${r.trend10.toFixed(4)}</span></div>
-    <div class="row"><span class="lbl">15m TREND</span>
-      <span class="val ${r.trend15Pos?"yes":"no"}">${r.trend15Pos?"▲":"▼"} ${r.trend15>0?"+":""}${r.trend15.toFixed(4)}</span></div>
 
     <hr class="divider">
 
-    <!-- INDICATORS -->
-    <table>
-      <tr><th>Indicator</th><th>Value</th><th>Signal</th></tr>
-      <tr><td>RSI (14)</td><td>${rsi.toFixed(1)}</td><td class="${r.rsiCls}">${r.rsiLabel}</td></tr>
-      <tr><td>EMA 9 / 21</td><td>${r.ema9.toFixed(2)} / ${r.ema21.toFixed(2)}</td>
-          <td class="${r.ema9>r.ema21?"yes":"no"}">${r.ema9>r.ema21?"BULLISH":"BEARISH"}</td></tr>
-      <tr><td>MACD Histogram</td><td>—</td><td>${macdText}</td></tr>
-      <tr><td>VWAP</td><td>${r.vwap.toFixed(4)}</td>
-          <td class="${price>r.vwap?"yes":"no"}">${price>r.vwap?"ABOVE":"BELOW"}</td></tr>
-      <tr><td>Candle ${candleIcon}</td>
-          <td>${r.latestCandleGreen?"Green":r.latestCandleRed?"Red":"Flat"} ${r.strongCandle?"(strong)":""}</td>
-          <td class="${r.latestCandleGreen?"yes":r.latestCandleRed?"no":"muted"}">${r.latestCandleGreen?"YES":r.latestCandleRed?"NO":"NEUTRAL"}</td></tr>
-      <tr><td>Volume</td><td>${r.latestVolume.toFixed(0)} / avg ${r.avgVol.toFixed(0)}</td>
-          <td class="${r.volumeSpike?"yes":"muted"}">${r.volumeSpike?"SPIKE":"NORMAL"}</td></tr>
-    </table>
-
-    <hr class="divider">
-
-    <!-- SECONDARY SIGNALS -->
+ <!-- SECONDARY SIGNALS -->
     <div class="row">
       <span class="lbl">CUSHION SIGNAL</span>
       <span class="val ${r.cushionCls}">${r.cushionSignal}</span>
@@ -972,6 +949,36 @@ function renderResult(r, rti, product, price, target, rsi, vol){
     </div>
     `}
 
+<hr class="divider">
+
+
+    <!-- TREND SUMMARY -->
+    <div class="row"><span class="lbl">5m TREND</span>
+      <span class="val ${r.trend5Pos?"yes":"no"}">${r.trend5Pos?"▲":"▼"} ${r.trend5>0?"+":""}${r.trend5.toFixed(4)}</span></div>
+    <div class="row"><span class="lbl">10m TREND</span>
+      <span class="val ${r.trend10Pos?"yes":"no"}">${r.trend10Pos?"▲":"▼"} ${r.trend10>0?"+":""}${r.trend10.toFixed(4)}</span></div>
+    <div class="row"><span class="lbl">15m TREND</span>
+      <span class="val ${r.trend15Pos?"yes":"no"}">${r.trend15Pos?"▲":"▼"} ${r.trend15>0?"+":""}${r.trend15.toFixed(4)}</span></div>
+
+    <!-- INDICATORS -->
+    <table>
+      <tr><th>Indicator</th><th>Value</th><th>Signal</th></tr>
+      <tr><td>RSI (14)</td><td>${rsi.toFixed(1)}</td><td class="${r.rsiCls}">${r.rsiLabel}</td></tr>
+      <tr><td>EMA 9 / 21</td><td>${r.ema9.toFixed(2)} / ${r.ema21.toFixed(2)}</td>
+          <td class="${r.ema9>r.ema21?"yes":"no"}">${r.ema9>r.ema21?"BULLISH":"BEARISH"}</td></tr>
+      <tr><td>MACD Histogram</td><td>—</td><td>${macdText}</td></tr>
+      <tr><td>VWAP</td><td>${r.vwap.toFixed(4)}</td>
+          <td class="${price>r.vwap?"yes":"no"}">${price>r.vwap?"ABOVE":"BELOW"}</td></tr>
+      <tr><td>Candle ${candleIcon}</td>
+          <td>${r.latestCandleGreen?"Green":r.latestCandleRed?"Red":"Flat"} ${r.strongCandle?"(strong)":""}</td>
+          <td class="${r.latestCandleGreen?"yes":r.latestCandleRed?"no":"muted"}">${r.latestCandleGreen?"YES":r.latestCandleRed?"NO":"NEUTRAL"}</td></tr>
+      <tr><td>Volume</td><td>${r.latestVolume.toFixed(0)} / avg ${r.avgVol.toFixed(0)}</td>
+          <td class="${r.volumeSpike?"yes":"muted"}">${r.volumeSpike?"SPIKE":"NORMAL"}</td></tr>
+    </table>
+
+    <hr class="divider">
+
+   
     <!-- SCALP BOX -->
     <div class="scalp-box">
       <div class="scalp-title ${r.scalpCls}">${r.scalpSignal}</div>
