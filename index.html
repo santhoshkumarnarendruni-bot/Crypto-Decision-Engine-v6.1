@@ -106,7 +106,7 @@
   </select>
 </div>
 <div class="btn-row">
-  <button id="btnAnalyze" onclick="runOnce()">▶ Analyze Now</button>
+  <button id="btnAnalyze" onclick="analyzeWithRefresh()">▶ Analyze Now</button>
   <button id="btnAuto" onclick="toggleAuto()">⟳ Start Auto-Refresh</button>
 </div>
 <div class="timer-info">
@@ -114,6 +114,64 @@
   <span id="timerCountdown" style="color:var(--warn);font-weight:700;">--:--</span>
 </div>
 <div class="timer-bar-wrap"><div class="timer-bar" id="timerBar"></div></div>
+<!-- Kalshi API Key Panel -->
+<details id="kalshiKeyPanel" style="margin-bottom:8px;">
+  <summary style="cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;
+    color:var(--info);padding:6px 10px;background:#0a1e35;border-radius:6px;
+    border:1px solid #1a3a6a;list-style:none;display:flex;align-items:center;gap:6px;">
+    🔑 Kalshi API Key (for placing bets) — click to expand
+  </summary>
+  <div style="background:#0a1620;border:1px solid #1a3a6a;border-top:none;border-radius:0 0 6px 6px;padding:10px;">
+    <div style="font-size:10px;color:var(--warn);font-family:'JetBrains Mono',monospace;
+      margin-bottom:8px;padding:5px 8px;background:#1a1200;border-radius:4px;border:1px solid var(--warn);">
+      ⚠ Only use on YOUR OWN device. Never share this file with your key in it.
+      Key stays in memory only — cleared when tab closes.
+    </div>
+    <input id="kalshiKeyId" type="text" placeholder="Key ID (from Kalshi → Settings → API)"
+      style="width:100%;margin-bottom:6px;font-family:'JetBrains Mono',monospace;font-size:11px;">
+    <textarea id="kalshiKeyPem" rows="4" placeholder="Paste private key PEM here&#10;-----BEGIN RSA PRIVATE KEY-----&#10;..."
+      style="width:100%;resize:vertical;padding:7px;border-radius:6px;border:1px solid var(--border);
+        background:#111c2a;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:10px;
+        box-sizing:border-box;margin-bottom:6px;"></textarea>
+    <button onclick="loadKalshiKey()" style="width:100%;padding:7px;border-radius:5px;border:none;
+      background:linear-gradient(135deg,#4a3fff,#2a1fcc);color:#fff;font-weight:700;
+      font-size:12px;cursor:pointer;font-family:'Space Grotesk',sans-serif;">
+      🔑 Load Key
+    </button>
+    <div id="keyStatus" style="font-size:10px;font-family:'JetBrains Mono',monospace;margin-top:5px;"></div>
+  </div>
+</details>
+
+<!-- Bet Panel (shown after key is loaded) -->
+<div id="betPanel" style="display:none;margin-bottom:8px;background:#0a1620;border:1px solid #1a3a6a;
+  border-radius:7px;padding:10px;">
+  <div style="font-size:11px;font-weight:700;color:var(--info);font-family:'JetBrains Mono',monospace;
+    margin-bottom:8px;">📤 Place Bet on Kalshi</div>
+  <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">
+    <input id="betCount" type="number" min="1" value="1" placeholder="Contracts"
+      style="width:90px;font-family:'JetBrains Mono',monospace;font-size:12px;">
+    <span style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;">contracts</span>
+    <button id="betBtnYES" onclick="placeBetViaProxy('yes')"
+      style="flex:1;padding:8px;border-radius:5px;border:none;
+        background:linear-gradient(135deg,#008844,#005522);color:#fff;
+        font-weight:700;font-size:13px;cursor:pointer;font-family:'Space Grotesk',sans-serif;">
+      🟢 BET YES
+    </button>
+    <button id="betBtnNO" onclick="placeBetViaProxy('no')"
+      style="flex:1;padding:8px;border-radius:5px;border:none;
+        background:linear-gradient(135deg,#cc2233,#881122);color:#fff;
+        font-weight:700;font-size:13px;cursor:pointer;font-family:'Space Grotesk',sans-serif;">
+      🔴 BET NO
+    </button>
+  </div>
+  <div id="betLog" style="display:none;font-size:10px;font-family:'JetBrains Mono',monospace;
+    padding:6px 9px;background:var(--bg3);border-radius:5px;border:1px solid var(--border);
+    line-height:1.6;"></div>
+  <div style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:5px;">
+    Places a fill-or-kill limit order at current Kalshi market price. Analyze first to confirm signal.
+  </div>
+</div>
+
 <div id="result"></div>
 
 <script>
@@ -1229,41 +1287,210 @@ async function loadKalshiTarget(product){
     inp.value             = result.target.toFixed(4);
     inp.style.borderColor = "var(--yes)";
 
-    const closeStr = new Date(result.closeTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
-    const bidStr   = result.yesBid != null
-      ? ` &nbsp;·&nbsp; YES bid: <b style="color:var(--yes)">${(result.yesBid*100).toFixed(0)}¢</b>`
-      : "";
-    const askStr   = result.yesAsk != null
-      ? ` / ask: ${(result.yesAsk*100).toFixed(0)}¢`
-      : "";
+    // Store on window so Analyze button can re-use ticker for bet placement
+    window._kalshiResult = result;
 
-    badge.style.color       = "var(--info)";
-    badge.style.background  = "#0a1e35";
-    badge.style.borderColor = "#1a3a6a";
-    badge.innerHTML =
-      `✓ <b>Kalshi target: ${result.target.toFixed(4)}</b>`+
-      ` &nbsp;·&nbsp; Ticker: ${result.ticker}`+
-      ` &nbsp;·&nbsp; Closes: ${closeStr}`+
-      `${bidStr}${askStr}`+
-      ` &nbsp;·&nbsp; <span style="color:var(--muted)">via ${result.proxyUsed} · edit if needed</span>`;
+    // YES/NO probability = midpoint of bid/ask (market-implied probability)
+    // yes_bid + yes_ask are in cents (0-99), convert to 0-1
+    let yesPct = null, noPct = null, yesColor = "var(--info)", noColor = "var(--info)";
+    if(result.yesBid != null && result.yesAsk != null){
+      yesPct  = ((result.yesBid + result.yesAsk) / 2 * 100).toFixed(1);
+      noPct   = (100 - parseFloat(yesPct)).toFixed(1);
+      yesColor = parseFloat(yesPct) >= 50 ? "var(--yes)" : "var(--muted)";
+      noColor  = parseFloat(noPct)  >= 50 ? "var(--no)"  : "var(--muted)";
+      // Also auto-fill the Market YES prob input for the analysis engine
+      const mktInp = $("market");
+      if(!mktInp.value) mktInp.value = (parseFloat(yesPct)/100).toFixed(2);
+    } else if(result.yesBid != null){
+      yesPct = (result.yesBid * 100).toFixed(1);
+      noPct  = (100 - parseFloat(yesPct)).toFixed(1);
+    }
+
+    const closeStr = new Date(result.closeTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});
+
+    badge.style.cssText = "font-size:11px;font-family:'JetBrains Mono',monospace;"+
+      "margin-top:4px;padding:0;border-radius:7px;border:1px solid #1a3a6a;overflow:hidden;";
+
+    const probBlock = yesPct != null ? `
+      <div style="display:flex;border-bottom:1px solid #1a3a6a;">
+        <div style="flex:1;padding:6px 10px;background:#011f10;text-align:center;">
+          <div style="font-size:9px;color:var(--muted);letter-spacing:.06em;margin-bottom:2px;">YES PROB</div>
+          <div style="font-size:20px;font-weight:700;color:${yesColor};line-height:1;">${yesPct}%</div>
+          <div style="font-size:9px;color:var(--muted);margin-top:1px;">bid ${(result.yesBid*100).toFixed(0)}¢ · ask ${(result.yesAsk!=null?(result.yesAsk*100).toFixed(0):"—")}¢</div>
+        </div>
+        <div style="width:1px;background:#1a3a6a;"></div>
+        <div style="flex:1;padding:6px 10px;background:#200010;text-align:center;">
+          <div style="font-size:9px;color:var(--muted);letter-spacing:.06em;margin-bottom:2px;">NO PROB</div>
+          <div style="font-size:20px;font-weight:700;color:${noColor};line-height:1;">${noPct}%</div>
+          <div style="font-size:9px;color:var(--muted);margin-top:1px;">implied from YES</div>
+        </div>
+      </div>` : "";
+
+    badge.innerHTML = probBlock +
+      `<div style="padding:4px 9px;background:#0a1e35;color:var(--muted);font-size:10px;display:flex;justify-content:space-between;align-items:center;">
+        <span>🎯 ${result.target.toFixed(4)} &nbsp;·&nbsp; closes ${closeStr} &nbsp;·&nbsp; ${result.ticker.split("-").slice(-2).join("-")}</span>
+        <span style="cursor:pointer;color:var(--info);" onclick="loadKalshiTarget('${product}')" title="Re-fetch from Kalshi">⟳ refresh</span>
+      </div>`;
+
   } else {
     inp.style.borderColor = "var(--warn)";
     inp.placeholder       = "Enter target manually from Coinbase";
+    window._kalshiResult  = null;
 
-    badge.style.color       = "var(--warn)";
-    badge.style.background  = "#1a1200";
-    badge.style.borderColor = "var(--warn)";
+    badge.style.cssText = "font-size:10px;font-family:'JetBrains Mono',monospace;"+
+      "margin-top:3px;padding:4px 9px;border-radius:5px;border:1px solid var(--warn);"+
+      "background:#1a1200;color:var(--warn);line-height:1.5;";
 
     const series = KALSHI_SERIES_MAP[product];
-    if(!series){
-      badge.innerHTML = `⚠ No Kalshi 15-min market for ${product} — enter target manually`;
+    badge.innerHTML = series
+      ? `⚠ Kalshi fetch failed — enter target manually · <a href="https://www.coinbase.com/predictions" target="_blank" style="color:var(--info)">Open Coinbase Predictions</a>`
+      : `⚠ No Kalshi 15-min market for ${product} — enter target manually`;
+  }
+}
+
+// ── Analyze with target refresh ──────────────────────────────────────────────
+// When Analyze is clicked: re-fetch Kalshi target in background (non-blocking),
+// then immediately run the analysis with whatever target is in the field.
+async function analyzeWithRefresh(){
+  const product = $("coin").value;
+  // Fire refresh in background — don't await, so Analyze runs instantly
+  loadKalshiTarget(product).catch(()=>{});
+  // Run analysis immediately with current target value
+  runOnce();
+}
+
+// ── Kalshi Bet Placement ──────────────────────────────────────────────────────
+// Kalshi uses RSA-PSS SHA256 signed headers. TRUE RSA signing requires
+// the WebCrypto API + your private key PEM. We use WebCrypto here so your
+// private key NEVER leaves your browser — it stays in memory only.
+//
+// ⚠ SECURITY WARNING: Only use this on your OWN device. Never share this
+// HTML file if it contains your API key. The key is stored in memory only
+// (not localStorage), so it's cleared when you close the tab.
+//
+// HOW TO USE:
+// 1. Go to kalshi.com → Settings → API → Generate API Key
+// 2. Download your private key (.pem file)
+// 3. Paste Key ID + private key PEM into the fields below
+// 4. Click BET YES or BET NO — a market order fires immediately
+
+let _kalshiKeyId  = "";
+let _kalshiCrypto = null; // CryptoKey object (WebCrypto)
+
+async function importKalshiKey(pemStr){
+  // Strip PEM headers and decode base64
+  const b64 = pemStr
+    .replace(/-----BEGIN.*?-----/g,"")
+    .replace(/-----END.*?-----/g,"")
+    .replace(/\s/g,"");
+  const bin = Uint8Array.from(atob(b64), c=>c.charCodeAt(0));
+  // Import as RSA-PSS SHA-256 signing key
+  return await crypto.subtle.importKey(
+    "pkcs8", bin.buffer,
+    { name:"RSA-PSS", hash:"SHA-256" },
+    false, ["sign"]
+  );
+}
+
+async function kalshiAuthHeaders(method, path){
+  if(!_kalshiCrypto) throw new Error("Kalshi key not loaded");
+  const ts  = Date.now().toString();
+  const msg = new TextEncoder().encode(ts + method + path);
+  const sig = await crypto.subtle.sign(
+    { name:"RSA-PSS", saltLength:32 }, _kalshiCrypto, msg
+  );
+  const b64sig = btoa(String.fromCharCode(...new Uint8Array(sig)));
+  return {
+    "Content-Type":           "application/json",
+    "KALSHI-ACCESS-KEY":      _kalshiKeyId,
+    "KALSHI-ACCESS-SIGNATURE":b64sig,
+    "KALSHI-ACCESS-TIMESTAMP":ts,
+  };
+}
+
+async function placeBetViaProxy(side){
+  // side = "yes" or "no"
+  const kr = window._kalshiResult;
+  if(!kr){ alert("No Kalshi market loaded — analyze first."); return; }
+  if(!_kalshiCrypto){ alert("Load your Kalshi API key first (see key section)."); return; }
+
+  const countStr = $("betCount").value.trim();
+  const count    = parseInt(countStr);
+  if(!count || count < 1){ alert("Enter number of contracts (min 1)."); return; }
+
+  // Get current price to use as limit price (bid for yes, ask for no)
+  const yesPrice = side === "yes"
+    ? (kr.yesAsk != null ? Math.round(kr.yesAsk * 100) : Math.round(kr.yesBid * 100) + 1)
+    : (kr.yesBid != null ? Math.round((1 - kr.yesBid) * 100) : 50);
+
+  const path    = "/trade-api/v2/portfolio/orders";
+  const headers = await kalshiAuthHeaders("POST", path);
+  const body    = JSON.stringify({
+    ticker:           kr.ticker,
+    side:             side,
+    action:           "buy",
+    type:             "limit",
+    count:            count,
+    yes_price:        side === "yes" ? yesPrice : 100 - yesPrice,
+    no_price:         side === "yes" ? 100 - yesPrice : yesPrice,
+    time_in_force:    "fill_or_kill",
+    client_order_id:  `cde-${Date.now()}`,
+  });
+
+  const betBtn = $("betBtn"+side.toUpperCase());
+  betBtn.disabled = true;
+  betBtn.textContent = "⟳ Placing…";
+
+  try {
+    // Must go through CORS proxy since Kalshi blocks direct browser POSTs
+    const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent("https://api.elections.kalshi.com"+path)}`;
+    const res = await fetch(proxyUrl, { method:"POST", headers, body, cache:"no-store" });
+    const data = await res.json();
+
+    if(res.ok && data.order){
+      betBtn.textContent = "✓ Placed!";
+      betBtn.style.background = "linear-gradient(135deg,#008844,#005522)";
+      const $betLog = $("betLog");
+      $betLog.style.display = "block";
+      $betLog.innerHTML = `<b style="color:var(--yes)">✓ ORDER PLACED</b><br>`+
+        `Side: ${side.toUpperCase()} · Count: ${count} · `+
+        `Price: ${side==="yes"?yesPrice:100-yesPrice}¢ · `+
+        `Order ID: <span style="color:var(--info)">${data.order.order_id||"—"}</span><br>`+
+        `Status: ${data.order.status||"submitted"} · Time: ${new Date().toLocaleTimeString()}`;
     } else {
-      badge.innerHTML =
-        `⚠ All 3 CORS proxies failed for ${product} (${series}) — `+
-        `enter target manually from `+
-        `<a href="https://www.coinbase.com/predictions" target="_blank" `+
-        `style="color:var(--info)">Coinbase Predictions</a>`;
+      const errMsg = data.message || data.error || JSON.stringify(data).slice(0,120);
+      betBtn.textContent = "✗ Failed";
+      betBtn.style.background = "linear-gradient(135deg,#cc2233,#881122)";
+      const $betLog = $("betLog");
+      $betLog.style.display = "block";
+      $betLog.innerHTML = `<b style="color:var(--no)">✗ ORDER FAILED</b><br>${errMsg}`;
     }
+  } catch(e){
+    betBtn.textContent = "✗ Error";
+    alert("Bet error: "+e.message);
+  }
+  setTimeout(()=>{
+    betBtn.disabled = false;
+    betBtn.textContent = side==="yes" ? "🟢 BET YES" : "🔴 BET NO";
+    betBtn.style.background = "";
+  }, 4000);
+}
+
+async function loadKalshiKey(){
+  const keyId  = $("kalshiKeyId").value.trim();
+  const pemStr = $("kalshiKeyPem").value.trim();
+  const status = $("keyStatus");
+  if(!keyId || !pemStr){ status.textContent = "⚠ Enter both Key ID and PEM"; status.style.color="var(--warn)"; return; }
+  try {
+    _kalshiCrypto = await importKalshiKey(pemStr);
+    _kalshiKeyId  = keyId;
+    status.textContent = "✓ Key loaded — ready to bet";
+    status.style.color = "var(--yes)";
+    $("betPanel").style.display = "block";
+  } catch(e){
+    status.textContent = "✗ Invalid key: "+e.message;
+    status.style.color = "var(--no)";
+    _kalshiCrypto = null;
   }
 }
 
@@ -1278,6 +1505,11 @@ window.addEventListener("DOMContentLoaded",()=>{
       .filter(k=>k.startsWith("conf_"))
       .forEach(k=>localStorage.removeItem(k));
     loadKalshiTarget($("coin").value);
+    // Reset bet buttons when coin changes
+    ["YES","NO"].forEach(s=>{
+      const b=$("betBtn"+s); if(b){ b.disabled=false; b.textContent=s==="YES"?"🟢 BET YES":"🔴 BET NO"; b.style.background=""; }
+    });
+    const bl=$("betLog"); if(bl) bl.style.display="none";
   });
 });
 </script>
