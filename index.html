@@ -654,16 +654,30 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
 
   // ── Indicator score tally ────────────────────────────────────
   let yesScore=0, noScore=0;
-  if(price>target) yesScore++; else noScore++;
-  if(latestAvg>target) yesScore++; else noScore++;
-  if(projectedAvg>target) yesScore++; else noScore++;
-  if(trend5Pos&&trend10Pos) yesScore++; else if(!trend5Pos&&!trend10Pos) noScore++;
-  if(ema9>ema21) yesScore++; else noScore++;
-  if(price>vwap) yesScore++; else noScore++;
-  if(latestCandleGreen) yesScore++; else if(latestCandleRed) noScore++;
-  if(rsi>52&&rsi<70) yesScore++; else if(rsi<48&&rsi>30) noScore++;
-  if(macdBullish===true) yesScore++; else if(macdBullish===false) noScore++;
-  if(volumeSpike){ if(yesScore>noScore) yesScore++; else noScore++; }
+  // Each vote: { label, side: "yes"|"no"|"neutral", key: bool (is this a key indicator?) }
+  const votes = [];
+
+  function vote(label, condition, key=false){
+    if(condition===true)       { yesScore++; votes.push({label,side:"yes",key}); }
+    else if(condition===false) { noScore++;  votes.push({label,side:"no", key}); }
+    else                       {             votes.push({label,side:"neutral",key}); }
+  }
+
+  // ★ = key indicator (directly references target price — most reliable)
+  vote("Price vs Target",      price>target ? true : false,                                   true);
+  vote("Candle Avg vs Target", latestAvg>target ? true : false,                               true);
+  vote("Projected vs Target",  projectedAvg>target ? true : false,                            true);
+  vote("5m+10m Trend",         (trend5Pos&&trend10Pos)?true:(!trend5Pos&&!trend10Pos)?false:null, false);
+  vote("EMA 9 vs 21",          ema9>ema21 ? true : false,                                     false);
+  vote("VWAP",                 price>vwap ? true : false,                                     false);
+  vote("Candle Color",         latestCandleGreen?true:latestCandleRed?false:null,             false);
+  vote("RSI",                  (rsi>52&&rsi<70)?true:(rsi<48&&rsi>30)?false:null,             false);
+  vote("MACD",                 macdBullish===true?true:macdBullish===false?false:null,        false);
+  // Volume: follows whichever side is leading after above 9 votes
+  const vsLabel = volumeSpike?(yesScore>noScore?"yes":"no"):"neutral";
+  if(volumeSpike){ if(yesScore>noScore){yesScore++;votes.push({label:"Volume Spike",side:"yes",key:false});}
+                   else {noScore++;votes.push({label:"Volume Spike",side:"no",key:false});} }
+  else { votes.push({label:"Volume",side:"neutral",key:false}); }
   const maxScore=10;
 
   // ── Flip risk (ATR-based) ────────────────────────────────────
@@ -948,7 +962,7 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     timeLeft, ema9, ema21, vwap,
     volumeSpike, avgVol, latestVolume:latest.volume,
     latestCandleGreen, latestCandleRed, strongCandle,
-    yesScore, noScore, maxScore,
+    yesScore, noScore, maxScore, votes,
     rsiLabel, rsiCls, macdBullish,
     flipRiskRatio, flipRiskLabel, atr, vol,
     scalpSignal, scalpCls, scalpAction, scalpEntry, scalpExit, scalpStop,
@@ -1111,26 +1125,54 @@ function renderResult(r, rti, product, price, target, rsi, vol){
       </div>
     </div>
 
-    <!-- ROW 2: YES/NO prob + chips -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;">
-      <div class="prob-box prob-yes" style="border-radius:7px;padding:5px;text-align:center;">
-        <div class="prob-pct yes" style="font-size:20px;">${(r.yes*100).toFixed(0)}%</div>
-        <div class="prob-label">YES · ${r.yesScore}/${r.maxScore}</div>
+    <!-- ROW 2: YES/NO compact with inline vote tags -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:4px;">
+
+      <!-- YES -->
+      <div style="background:#052e16;border:1px solid var(--yes);border-radius:7px;padding:4px 6px;">
+        <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:3px;">
+          <span style="font-size:18px;font-weight:800;color:var(--yes);line-height:1;">${(r.yes*100).toFixed(0)}%</span>
+          <span style="font-size:9px;color:var(--yes);font-weight:700;">YES ${r.yesScore}/${r.maxScore}</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:2px;">
+          ${r.votes.filter(v=>v.side==="yes").map(v=>`<span style="font-size:8px;padding:1px 5px;border-radius:10px;background:#064e1a;color:var(--yes);border:1px solid #16a34a;">${v.key?"★ ":""}${v.label}</span>`).join("")}
+        </div>
       </div>
-      <div class="prob-box prob-no" style="border-radius:7px;padding:5px;text-align:center;">
-        <div class="prob-pct no" style="font-size:20px;">${(r.no*100).toFixed(0)}%</div>
-        <div class="prob-label">NO · ${r.noScore}/${r.maxScore}</div>
+
+      <!-- NO -->
+      <div style="background:#450a0a;border:1px solid var(--no);border-radius:7px;padding:4px 6px;">
+        <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:3px;">
+          <span style="font-size:18px;font-weight:800;color:var(--no);line-height:1;">${(r.no*100).toFixed(0)}%</span>
+          <span style="font-size:9px;color:var(--no);font-weight:700;">NO ${r.noScore}/${r.maxScore}</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:2px;">
+          ${r.votes.filter(v=>v.side==="no").map(v=>`<span style="font-size:8px;padding:1px 5px;border-radius:10px;background:#6b0d0d;color:var(--no);border:1px solid #dc2626;">${v.key?"★ ":""}${v.label}</span>`).join("")}
+          ${r.votes.filter(v=>v.side==="neutral").map(v=>`<span style="font-size:8px;padding:1px 5px;border-radius:10px;background:#222;color:var(--muted);border:1px solid #333;">– ${v.label}</span>`).join("")}
+        </div>
       </div>
     </div>
+    <div style="font-size:8px;color:var(--muted);margin-bottom:4px;">★ key (targets settlement) · neutral shown in NO column</div>
 
-    <!-- CHIPS row -->
+    <!-- CHIPS row — includes trap/alert inline indicator -->
     <div class="chips" style="margin-bottom:5px;">
       <span class="chip chip-${r.timeLeft<=2?"no":r.timeLeft<=5?"warn":"info"}">⏱ ${r.timeLeft.toFixed(1)}m</span>
       <span class="chip chip-${r.confidence>=70?"yes":r.confidence>=55?"warn":"no"}">Conf ${r.confidence}%</span>
-      <span class="chip chip-${r.flipRiskRatio>=2?"yes":r.flipRiskRatio>=1.2?"warn":"no"}">${r.flipRiskLabel}</span>
+      <span class="chip chip-${r.flipRiskRatio>=2?"yes":r.flipRiskRatio>=1.2?"warn":"no"}">${r.flipRiskLabel} risk</span>
       <span class="chip chip-muted">${r.confirmCount}/2✓</span>
       <span class="chip chip-info">${$("aggrMode").value}</span>
       <span class="chip chip-muted">Mkt ${(r.marketYes*100).toFixed(0)}/${(r.marketNo*100).toFixed(0)}%</span>
+      ${r.trapSignal!=="NONE" ?
+        r.trapSignal.includes("DETECTED") ?
+          `<span class="chip chip-${r.trapCls}" style="font-weight:800;">
+            ${r.trapCls==="no"?"🪤 BULL TRAP":r.trapCls==="yes"?"🪤 BEAR TRAP":"⚡ CAUTION"}
+            ↓ details
+          </span>` :
+          `<span class="chip chip-warn" style="font-weight:700;">
+            👀 ${r.trapCls==="no"?"Bull":"Bear"} Watch ↓
+          </span>`
+        : `<span class="chip chip-yes">✓ No Trap</span>`}
+      ${r.cushionSignal==="CUSHION: YES SIDE"?`<span class="chip chip-yes">✅ Cushion YES</span>`
+        :r.cushionSignal==="CUSHION: NO SIDE"?`<span class="chip chip-no">🔴 Cushion NO</span>`:""}
     </div>
 
     <!-- ROW 3: Price data + Indicators in 2-col card grid -->
