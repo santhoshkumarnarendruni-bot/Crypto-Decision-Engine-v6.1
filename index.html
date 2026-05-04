@@ -304,14 +304,34 @@ function parseKalshiMarkets(jsonText){
     // Sort by close_time ascending → soonest-closing = current window
     const sorted = data.markets.sort((a,b) => new Date(a.close_time)-new Date(b.close_time));
     const m = sorted[0];
+
+    // floor_strike can be number or string (Kalshi fixed-point migration Mar 2026)
     const strike = m.floor_strike ?? m.strike_value ?? null;
     if(strike === null) return null;
+
+    // Price fields — Kalshi migrated to dollar strings in March 2026:
+    //   New: yes_bid_dollars = "0.6200"  (decimal string, multiply × 1 = fraction)
+    //   Old: yes_bid = 62               (integer cents, divide by 100)
+    // We handle BOTH so the tool works regardless of proxy response version.
+    function toFrac(dollarStr, centsInt){
+      if(dollarStr != null && dollarStr !== "") return parseFloat(dollarStr);
+      if(centsInt  != null)                     return centsInt / 100;
+      return null;
+    }
+
+    const yesBid = toFrac(m.yes_bid_dollars ?? m.yes_bid_dollar, m.yes_bid);
+    const yesAsk = toFrac(m.yes_ask_dollars ?? m.yes_ask_dollar, m.yes_ask);
+
+    // Fallback: derive from last_price if bid/ask missing
+    const lastPrice = m.last_price != null ? m.last_price / 100 : null;
+
     return {
       target:    Number(strike),
       ticker:    m.ticker,
       closeTime: m.close_time,
-      yesBid:    m.yes_bid != null ? m.yes_bid / 100 : null,
-      yesAsk:    m.yes_ask != null ? m.yes_ask / 100 : null,
+      yesBid:    yesBid,
+      yesAsk:    yesAsk ?? yesBid,        // if no ask, use bid as best estimate
+      lastPrice: lastPrice,
     };
   } catch(e){ return null; }
 }
@@ -802,17 +822,27 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
 
   // "Barely above/below" = projected avg is on the right side but cushion is thin
   // Threshold: less than 1.0× ATR of cushion (was 0.8× cushionThreshold which was too generous)
-  const projBarelyA = projectedAvg > target && (projectedAvg - target) < atr * 1.0;
-  const projBarelyB = projectedAvg < target && (target - projectedAvg) < atr * 1.0;
+  // "Barely" threshold: projected avg is on the right side but VERY close to target.
+  // Tightened from 1.0 ATR to 0.4 ATR — a $2 cushion on a $107 ATR coin is NOT
+  // "barely above", it's inside noise. Only flag when cushion < 0.4 ATR.
+  const projBarelyA = projectedAvg > target && (projectedAvg - target) < atr * 0.4;
+  const projBarelyB = projectedAvg < target && (target - projectedAvg) < atr * 0.4;
 
-  // Strong cushion = projected avg is clearly on one side (>1.5× ATR away from target)
-  // When this is true, a trap on that side CANNOT fire
+  // Strong cushion = projected avg has clear separation from target (>= 1.5 ATR)
   const strongCushionYes = projectedAvg > target && (projectedAvg - target) >= atr * 1.5;
   const strongCushionNo  = projectedAvg < target && (target - projectedAvg) >= atr * 1.5;
 
-  // MANDATORY GATE: without this, the trap cannot trigger
+  // MANDATORY GATE 1: structural — trap direction must match projection conflict
   const bullTrapPossible = priceAbove && (projBelow || projBarelyA) && !strongCushionYes;
   const bearTrapPossible = priceBelow && (projAbove || projBarelyB) && !strongCushionNo;
+
+  // MANDATORY GATE 2: minimum cushion for actionable trap
+  // If projected avg is within 1.5 ATR of target, the outcome is too uncertain to BET.
+  // This catches Case 2: $2 cushion on $107 ATR — trap score 7 but cushion 0.02x ATR.
+  const trapCushionEnough = avgDistance >= atr * 1.5;
+
+  // MANDATORY GATE 3: magnet zone = never actionable regardless of trap
+  const trapBlockedByMagnet = targetMagnetZone;
 
   const t5Rev      = trend5 < 0 && trend10 > 0;   // 5m turned bearish, 10m still bullish
   const t5Rec      = trend5 > 0 && trend10 < 0;   // 5m turned bullish, 10m still bearish
@@ -834,6 +864,9 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   const narrowEMAdn = ema9 < ema21 && (ema21 - ema9) < atr * 0.4;
 
   // Score — only computed when trap is structurally possible
+  // projBelow/projAbove worth 3 points (strong structural signal)
+  // projBarelyA/B worth 1 point (weak — projection barely contradicts price)
+  // Without projBelow or projBarelyA the bullScore stays 0 (gate above ensures this)
   const bullScore = !bullTrapPossible ? 0 :
     (priceAbove?1:0) + (projBelow?3:projBarelyA?1:0) +
     (t5Rev?2:t5Weaker?1:0) + (rsiOB?2:0) + (macdBearDiv?2:0) +
@@ -852,7 +885,7 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     (avgCushion > 0 && projAbove && cushionSignal.includes("YES")) ||
     (avgCushion < 0 && projBelow && cushionSignal.includes("NO"));
 
-  if(bullScore >= 6 && !cushionWinsOverTrap){
+  if(bullScore >= 6 && !cushionWinsOverTrap && trapCushionEnough && !trapBlockedByMagnet){
     trapSignal  = "⚠ BULL TRAP DETECTED"; trapCls = "no";
     trapWarning = "RTI price above target but projected settlement is BELOW or barely above — FAKE BREAKOUT → BET NO";
     trapDetail  = [
@@ -873,11 +906,12 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     trapConflict= "CUSHION WINS";
   } else if(bullScore >= 4 && priceAbove && !strongCushionYes){
     trapSignal  = "👀 BULL TRAP WATCH"; trapCls = "warn";
-    trapWarning = "Price above target but some reversal signals present. Cushion is thin — watch carefully.";
-    trapDetail  = `Score ${bullScore}/11 — not strong enough to override. Needs projected avg below target to confirm.`;
+    const blocked = trapBlockedByMagnet ? " · MAGNET ZONE — skip anyway" : (!trapCushionEnough ? ` · Cushion only ${avgDistance.toFixed(1)} vs need ${(atr*1.5).toFixed(1)} (1.5 ATR) — too small to act` : "");
+    trapWarning = `Price above target but reversal signals present${blocked}. Watch only — NOT a bet.`;
+    trapDetail  = `Score ${bullScore}/11 — not strong enough. Needs projected avg below target to confirm.`;
   }
 
-  if(bearScore >= 6 && trapSignal === "NONE" && !cushionWinsOverTrap){
+  if(bearScore >= 6 && trapSignal === "NONE" && !cushionWinsOverTrap && trapCushionEnough && !trapBlockedByMagnet){
     trapSignal  = "⚠ BEAR TRAP DETECTED"; trapCls = "yes";
     trapWarning = "RTI price below target but projected settlement is ABOVE or barely below — FAKE BREAKDOWN → BET YES";
     trapDetail  = [
@@ -891,7 +925,8 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     warnings.push("⚠ BEAR TRAP — projected settlement contradicts live price");
   } else if(bearScore >= 4 && priceBelow && trapSignal === "NONE" && !strongCushionNo){
     trapSignal  = "👀 BEAR TRAP WATCH"; trapCls = "warn";
-    trapWarning = "Price below target but some recovery signals present. Watch carefully.";
+    const blocked = trapBlockedByMagnet ? " · MAGNET ZONE — skip anyway" : (!trapCushionEnough ? ` · Cushion only ${avgDistance.toFixed(1)} vs need ${(atr*1.5).toFixed(1)} (1.5 ATR) — too small to act` : "");
+    trapWarning = `Price below target but recovery signals present${blocked}. Watch only — NOT a bet.`;
     trapDetail  = `Score ${bearScore}/11 — mild. Needs projected avg above target to confirm.`;
   }
 
@@ -1126,7 +1161,7 @@ function renderResult(r, rti, product, price, target, rsi, vol){
 <span class="val ${r.trend5Pos?"yes":"no"}">${r.trend5Pos?"▲":"▼"}</span>
 <span class="val ${r.trend10Pos?"yes":"no"}">${r.trend10Pos?"▲":"▼"}</span>
 <span class="val ${r.trend15Pos?"yes":"no"}">${r.trend15Pos?"▲":"▼"} </span> 
-    <div class="row"><span class="lbl">RTI BLENDED PRICE</span><span class="val warn">${price.toFixed(4)}</span></div>
+    <div class="row"><span class="lbl">RTI BLENDED PRICE</span><span class="val ${price>target?"yes":"no"}">${price.toFixed(4)}</span></div>
     <div class="row"><span class="lbl">TARGET</span><span class="val">${target.toFixed(4)}</span></div>
     <div class="row"><span class="lbl">PROJECTED SETTLEMENT</span><span class="val info">${r.projectedAvg.toFixed(4)}</span></div>
     <div class="row"><span class="lbl">ROLL15 HISTORY AVG</span><span class="val muted">${r.roll15avg.toFixed(4)}</span></div>
