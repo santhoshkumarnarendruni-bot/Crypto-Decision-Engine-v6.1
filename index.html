@@ -825,18 +825,33 @@ function renderResult(r, rti, product, price, target, rsi, vol){
       &nbsp;·&nbsp; <b>Blended: ${price.toFixed(4)}</b>
     </div>`;
 
+  // Cushion alert banner
+  const cushionAlert = (r.cushionSignal === "CUSHION: YES SIDE") ? `
+    <div style="background:#011f10;border:2px solid var(--yes);border-radius:7px;padding:8px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;font-family:'JetBrains Mono',monospace;">
+      <span style="font-size:20px;line-height:1;">✅</span>
+      <div>
+        <div style="font-size:13px;font-weight:700;color:var(--yes);letter-spacing:.03em;">CUSHION CONFIRMED: YES SIDE</div>
+        <div style="font-size:10px;color:#88cc99;margin-top:2px;">Projected settlement has safe cushion ABOVE target — supports BET YES</div>
+      </div>
+    </div>` :
+    (r.cushionSignal === "CUSHION: NO SIDE") ? `
+    <div style="background:#200010;border:2px solid var(--no);border-radius:7px;padding:8px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;font-family:'JetBrains Mono',monospace;">
+      <span style="font-size:20px;line-height:1;">🔴</span>
+      <div>
+        <div style="font-size:13px;font-weight:700;color:var(--no);letter-spacing:.03em;">CUSHION CONFIRMED: NO SIDE</div>
+        <div style="font-size:10px;color:#cc8888;margin-top:2px;">Projected settlement has safe cushion BELOW target — supports BET NO</div>
+      </div>
+    </div>` : "";
+
   const lateNote = r.lateWin ?
     `<div class="late-warn">⚡ UNDER 2.5 MIN — Late mode active. Confirmation gate bypassed. Check Coinbase payout before entering.</div>` : "";
 
   const refreshNote = lastRefreshTime ?
     `<div class="refresh-badge">Updated: ${lastRefreshTime.toLocaleTimeString()} ${isAuto?"· Auto every "+$("refreshRate").value+"s":"· Manual"} · Roll15avg: ${r.roll15avg.toFixed(2)} · Nudge: ${r.momentumNudge>0?"+":""}${r.momentumNudge.toFixed(2)}</div>` : "";
 
-  $("result").innerHTML = `
-  <div class="card">
-    ${lateNote}
-    ${rtiBadge}
-
-    <!-- MAIN SIGNAL -->
+  // Signal box: compact for SKIP/WATCH, full for BET YES/NO
+  const isActionable = r.displayDecision === "BET YES" || r.displayDecision === "BET NO";
+  const signalBoxHtml = isActionable ? `
     <div class="signal-box ${r.boxCls}">
       <div class="signal-title ${r.decisionCls}">${r.displayDecision}</div>
       <div class="entry-tag ${r.decisionCls}">${r.entryTiming}</div>
@@ -867,7 +882,31 @@ function renderResult(r, rti, product, price, target, rsi, vol){
           <div class="metric-val info">${$("aggrMode").value.toUpperCase()}</div>
         </div>
       </div>
-    </div>
+    </div>` : `
+    <div class="signal-box ${r.boxCls}" style="padding:7px 10px;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:5px;">
+        <div>
+          <div class="signal-title ${r.decisionCls}" style="font-size:14px;margin-bottom:2px;">${r.displayDecision}</div>
+          <div class="entry-tag ${r.decisionCls}" style="font-size:10px;padding:2px 7px;margin-bottom:3px;">${r.entryTiming}</div>
+          <div style="font-size:10px;color:var(--muted);">${r.signalReason}</div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
+          <span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">⏱ <span class="${r.timeLeft<=2?"no":r.timeLeft<=5?"warn":"yes"}">${r.timeLeft.toFixed(1)}m</span></span>
+          <span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">🎯 <span class="conf">${r.confidence}%</span></span>
+          <span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">✓ ${r.confirmCount}/2</span>
+          <span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px;"><span class="${r.flipRiskRatio>=2?"yes":r.flipRiskRatio>=1.2?"warn":"no"}">${r.flipRiskLabel}</span> risk</span>
+        </div>
+      </div>
+    </div>`;
+
+  $("result").innerHTML = `
+  <div class="card">
+    ${cushionAlert}
+    ${lateNote}
+    ${rtiBadge}
+
+    <!-- MAIN SIGNAL -->
+    ${signalBoxHtml}
 
     <!-- SCORES -->
     <div style="margin-bottom:10px;">
