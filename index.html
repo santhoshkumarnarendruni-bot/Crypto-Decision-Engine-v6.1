@@ -3,117 +3,122 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Crypto Decision Engine v6.1 — Blended RTI</title>
+<title>Crypto Decision Engine v6.2</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;600;700&display=swap');
-  :root {
-    --bg:#070b10; --bg2:#0d1520; --bg3:#111c2a; --border:#1e2d40;
-    --text:#c8d8e8; --muted:#556677;
-    --yes:#00e87a; --no:#ff3d5a; --warn:#ffb020; --info:#38b6ff; --conf:#7c6fff;
+  :root{
+    --bg:#0e0e0e; --card:#181818; --border:#252525;
+    --text:#ddd; --muted:#555;
+    --yes:#22c55e; --no:#ef4444; --warn:#f59e0b; --info:#60a5fa; --conf:#a78bfa;
   }
   *{box-sizing:border-box;margin:0;padding:0;}
-  body{background:var(--bg);color:var(--text);font-family:'Space Grotesk',sans-serif;font-size:13px;padding:12px;max-width:720px;margin:auto;}
-  .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border);}
-  .title{font-size:15px;font-weight:700;letter-spacing:.03em;color:#fff;}
-  .version{font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;}
-  .controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;}
-  .controls-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;}
-  select,input{width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:12px;font-family:'JetBrains Mono',monospace;outline:none;}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:11px;padding:7px;max-width:420px;margin:auto;}
+  h1{font-size:13px;font-weight:700;color:#fff;margin-bottom:7px;}
+  select,input,textarea{width:100%;padding:5px 8px;border-radius:5px;border:1px solid var(--border);background:var(--card);color:var(--text);font-size:11px;outline:none;margin-bottom:5px;}
   select:focus,input:focus{border-color:var(--info);}
-  .btn-row{display:flex;gap:8px;margin-bottom:8px;}
-  button{flex:1;padding:9px;border-radius:6px;border:none;color:#fff;font-weight:700;font-size:12px;cursor:pointer;font-family:'Space Grotesk',sans-serif;letter-spacing:.04em;transition:opacity .15s;}
-  button:hover{opacity:.85;}
-  #btnAnalyze{background:linear-gradient(135deg,#1a6fff,#0045cc);}
-  #btnAuto{background:linear-gradient(135deg,#008844,#00551f);}
-  #btnAuto.active{background:linear-gradient(135deg,#ff3d5a,#991f30);}
-  .timer-bar-wrap{background:var(--bg3);border-radius:4px;height:6px;overflow:hidden;margin-bottom:10px;border:1px solid var(--border);}
-  .timer-bar{height:100%;border-radius:4px;transition:width 1s linear,background .5s;}
-  .timer-info{display:flex;justify-content:space-between;font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--muted);margin-bottom:4px;}
-  .card{background:#0d1520;border:1px solid var(--border);border-radius:10px;padding:14px;margin-top:10px;}
-  .signal-box{border-radius:8px;padding:14px;margin-bottom:12px;border:2px solid var(--border);}
-  .signal-box.yes-box{background:#011f10;border-color:var(--yes);}
-  .signal-box.no-box{background:#200010;border-color:var(--no);}
-  .signal-box.warn-box{background:#1a1200;border-color:var(--warn);}
-  .signal-box.skip-box{background:var(--bg3);border-color:var(--border);}
-  .signal-title{font-size:22px;font-weight:700;letter-spacing:.04em;margin-bottom:4px;}
-  .signal-title.yes{color:var(--yes);} .signal-title.no{color:var(--no);} .signal-title.warn{color:var(--warn);} .signal-title.skip{color:var(--muted);}
-  .entry-tag{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;font-family:'JetBrains Mono',monospace;margin-bottom:8px;letter-spacing:.06em;}
-  .entry-tag.yes{background:#00e87a22;color:var(--yes);border:1px solid var(--yes);}
-  .entry-tag.no{background:#ff3d5a22;color:var(--no);border:1px solid var(--no);}
-  .entry-tag.warn{background:#ffb02022;color:var(--warn);border:1px solid var(--warn);}
-  .entry-tag.skip{background:#33445522;color:var(--muted);border:1px solid var(--border);}
-  .metric-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:8px;}
-  .metric-item{background:var(--bg);padding:7px 9px;border-radius:6px;border:1px solid var(--border);font-size:11px;font-family:'JetBrains Mono',monospace;}
-  .metric-label{color:var(--muted);font-size:10px;margin-bottom:2px;}
-  .metric-val{font-weight:700;font-size:13px;}
-  .divider{border:none;border-top:1px solid var(--border);margin:10px 0;}
-  .row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;}
-  .row .lbl{color:var(--muted);font-size:11px;font-family:'JetBrains Mono',monospace;}
-  .row .val{font-weight:600;font-size:12px;font-family:'JetBrains Mono',monospace;}
+  .btn{width:100%;padding:7px;border-radius:6px;border:none;color:#fff;font-weight:700;font-size:12px;cursor:pointer;transition:opacity .15s;margin-bottom:5px;}
+  .btn:hover{opacity:.88;}
+  .btn-green{background:#16a34a;}
+  .btn-blue{background:#2563eb;}
+  .btn-red{background:#dc2626;}
+  .btn-auto{background:#1d4ed8;}
+  .btn-auto.active{background:#991b1b;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:7px;padding:7px 9px;margin-bottom:5px;}
+  /* Timer */
+  .timer-wrap{height:3px;background:#222;border-radius:2px;margin-bottom:6px;overflow:hidden;}
+  .timer-bar{height:100%;border-radius:2px;transition:width 1s linear,background .5s;}
+  .timer-row{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:3px;}
+  /* Signal */
+  .signal-big{font-size:20px;font-weight:800;letter-spacing:.02em;line-height:1;}
+  .signal-sub{font-size:10px;color:var(--muted);margin-top:2px;margin-bottom:5px;}
+  /* Data rows — 2-col compact grid */
+  .drow{display:flex;justify-content:space-between;align-items:center;padding:2px 0;border-bottom:1px solid #1e1e1e;font-size:10.5px;}
+  .drow:last-child{border-bottom:none;}
+  .drow .lbl{color:var(--muted);}
+  .drow .val{font-weight:600;}
+  /* Two-column grid for data rows */
+  .dgrid{display:grid;grid-template-columns:1fr 1fr;gap:0 8px;}
+  /* Prob boxes */
+  .prob-row{display:flex;gap:5px;margin:5px 0;}
+  .prob-box{flex:1;border-radius:6px;padding:5px 6px;text-align:center;}
+  .prob-yes{background:#052e16;border:1px solid var(--yes);}
+  .prob-no{background:#450a0a;border:1px solid var(--no);}
+  .prob-pct{font-size:18px;font-weight:800;line-height:1;}
+  .prob-label{font-size:9px;color:var(--muted);margin-top:1px;text-transform:uppercase;letter-spacing:.05em;}
+  .prob-detail{font-size:9px;margin-top:2px;}
+  /* Chips */
+  .chips{display:flex;flex-wrap:wrap;gap:3px;margin:4px 0;}
+  .chip{padding:2px 6px;border-radius:20px;font-size:9.5px;font-weight:600;border:1px solid;}
+  .chip-yes{background:#052e16;color:var(--yes);border-color:var(--yes);}
+  .chip-no{background:#450a0a;color:var(--no);border-color:var(--no);}
+  .chip-warn{background:#451a03;color:var(--warn);border-color:var(--warn);}
+  .chip-info{background:#0c2a4a;color:var(--info);border-color:var(--info);}
+  .chip-muted{background:#222;color:var(--muted);border-color:var(--border);}
+  /* Section label */
+  .sec{font-size:9px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin:6px 0 3px;}
+  /* Banners */
+  .banner{border-radius:6px;padding:5px 8px;margin-bottom:5px;font-size:11px;font-weight:600;display:flex;align-items:center;gap:6px;}
+  .banner-yes{background:#052e16;border:1.5px solid var(--yes);color:var(--yes);}
+  .banner-no{background:#450a0a;border:1.5px solid var(--no);color:var(--no);}
+  .banner-warn{background:#451a03;border:1.5px solid var(--warn);color:var(--warn);}
+  .banner-late{background:#1c0f00;border:1.5px solid var(--warn);color:var(--warn);}
+  /* Trap */
+  .trap-box{border-radius:6px;padding:6px 8px;margin:4px 0;font-size:10.5px;}
+  .trap-detail{font-size:9.5px;color:var(--muted);margin-top:3px;line-height:1.4;}
+  /* Reasons */
+  .reason-item{font-size:10px;color:var(--muted);padding:1px 0;line-height:1.4;}
+  .reason-item.warn{color:var(--warn);}
+  /* Utils */
   .yes{color:var(--yes);} .no{color:var(--no);} .warn{color:var(--warn);} .info{color:var(--info);} .conf{color:var(--conf);} .muted{color:var(--muted);}
-  .scalp-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;}
-  .scalp-title{font-size:14px;font-weight:700;margin-bottom:6px;}
-  .reasons-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:11px;line-height:1.6;font-family:'JetBrains Mono',monospace;}
-  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:11px;}
-  td,th{border-bottom:1px solid var(--border);padding:6px 8px;text-align:left;font-family:'JetBrains Mono',monospace;}
-  th{color:var(--warn);font-size:10px;letter-spacing:.06em;text-transform:uppercase;}
-  .score-bar-wrap{display:flex;align-items:center;gap:8px;margin:8px 0;}
-  .score-bar{flex:1;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;border:1px solid var(--border);}
-  .score-fill-yes{height:100%;background:var(--yes);border-radius:4px;transition:width .4s;}
-  .score-fill-no{height:100%;background:var(--no);border-radius:4px;transition:width .4s;}
-  .score-label{font-size:11px;font-family:'JetBrains Mono',monospace;color:var(--muted);width:28px;text-align:right;}
-  .refresh-badge{font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--muted);margin-top:6px;}
-  .late-warn{background:#2a1500;border:1px solid var(--warn);border-radius:6px;padding:6px 10px;font-size:11px;color:var(--warn);margin-bottom:8px;font-family:'JetBrains Mono',monospace;}
-  .rti-badge{background:#0a1e35;border:1px solid #1a3a6a;border-radius:6px;padding:6px 10px;font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--info);margin-bottom:10px;line-height:1.5;}
+  .bold{font-weight:700;}
   .spin{animation:spin 1s linear infinite;display:inline-block;}
   @keyframes spin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}
+  .divider{border:none;border-top:1px solid var(--border);margin:5px 0;}
 </style>
 </head>
 <body>
 
-<div class="header">
-  <div>
-    <div class="title">Crypto Decision Engine <span style="color:var(--info)">v6.1</span></div>
-    
-  </div>
-  <div id="clockDisplay" style="font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--muted);text-align:right;"></div>
-</div>
+<h1>Decision Engine <span style="color:var(--info);font-weight:400;">v6.2</span>
+  <span id="clockDisplay" style="float:right;font-size:10px;color:var(--muted);font-weight:400;"></span>
+</h1>
 
-<div class="controls">
-  <select id="coin">
-    <option value="BTC-USD">BTC / Bitcoin</option>
-    <option value="ETH-USD">ETH / Ethereum</option>
-    <option value="SOL-USD">SOL / Solana</option>
-    <option value="XRP-USD">XRP / Ripple</option>
-    <option value="DOGE-USD">DOGE / Dogecoin</option>
-    <option value="BNB-USD">BNB</option>
-    <option value="HYPE-USD">HYPE</option>
-  </select>
-  <input id="target" type="number" step="0.0001" placeholder="⟳ Deriving from 15m candle…" readonly style="opacity:0.6;">
-</div>
-<div class="controls-row">
-  <input id="market" type="number" step="0.01" min="0" max="1" placeholder="Market YES prob (0.62)">
-  <select id="refreshRate">
-    <option value="30">Auto: 30s</option>
-    <option value="20">Auto: 20s</option>
-    <option value="15">Auto: 15s</option>
-    <option value="10">Auto: 10s</option>
-  </select>
-  <select id="aggrMode">
+<select id="coin">
+  <option value="BTC-USD">BTC — Bitcoin</option>
+  <option value="ETH-USD">ETH — Ethereum</option>
+  <option value="SOL-USD">SOL — Solana</option>
+  <option value="XRP-USD">XRP — Ripple</option>
+  <option value="DOGE-USD">DOGE — Dogecoin</option>
+  <option value="BNB-USD">BNB</option>
+  <option value="HYPE-USD">HYPE</option>
+</select>
+
+<input id="target" type="number" step="0.0001" placeholder="⟳ Fetching target from Kalshi…" readonly style="opacity:0.6;">
+
+<!-- market input: auto-filled from Kalshi bid/ask, can be overridden -->
+<input id="market" type="number" step="0.01" min="0" max="1"
+  placeholder="Market YES prob (auto-filled from Kalshi bid/ask)">
+
+<div style="display:flex;gap:8px;">
+  <select id="aggrMode" style="flex:1;">
     <option value="conservative">Conservative</option>
     <option value="balanced" selected>Balanced</option>
     <option value="aggressive">Aggressive</option>
   </select>
+  <select id="refreshRate" style="flex:1;">
+    <option value="30">Auto 30s</option>
+    <option value="20">Auto 20s</option>
+    <option value="15">Auto 15s</option>
+    <option value="10">Auto 10s</option>
+  </select>
 </div>
-<div class="btn-row">
-  <button id="btnAnalyze" onclick="analyzeWithRefresh()">▶ Analyze Now</button>
-  <button id="btnAuto" onclick="toggleAuto()">⟳ Start Auto-Refresh</button>
-</div>
-<div class="timer-info">
-  <span>Time to next 15-min settlement:</span>
+
+<button class="btn btn-green" id="btnAnalyze" onclick="analyzeWithRefresh()">▶ Analyze</button>
+<button class="btn btn-auto" id="btnAuto" onclick="toggleAuto()">⟳ Start Auto-Refresh</button>
+
+<div class="timer-row">
+  <span>Next settlement:</span>
   <span id="timerCountdown" style="color:var(--warn);font-weight:700;">--:--</span>
 </div>
-<div class="timer-bar-wrap"><div class="timer-bar" id="timerBar"></div></div>
+<div class="timer-wrap"><div class="timer-bar" id="timerBar"></div></div>
 <!-- Kalshi API Key Panel -->
 <details id="kalshiKeyPanel" style="margin-bottom:8px;">
   <summary style="cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;
@@ -978,7 +983,7 @@ function toggleAuto(){
 async function runOnce(){
   const product    = $("coin").value;
   const target     = Number($("target").value);
-  const marketInput= Number($("market").value);
+  const mktEl = $("market"); const marketInput = mktEl ? Number(mktEl.value) : NaN;
   const aggrMode   = $("aggrMode").value;
 
   if(!target||isNaN(target)){
@@ -1042,237 +1047,148 @@ async function runOnce(){
 
 // ─── Render ───────────────────────────────────────────────────────────────────
 function renderResult(r, rti, product, price, target, rsi, vol){
-  const candleIcon = r.latestCandleGreen?"🟢":r.latestCandleRed?"🔴":"⬜";
-  const macdText   = r.macdBullish===true?`<span class="yes">▲ Bullish</span>`:
-                     r.macdBullish===false?`<span class="no">▼ Bearish</span>`:
-                     `<span class="muted">N/A</span>`;
+  const macdText  = r.macdBullish===true?"▲ Bullish":r.macdBullish===false?"▼ Bearish":"—";
+  const macdCls   = r.macdBullish===true?"yes":r.macdBullish===false?"no":"muted";
+  const spreadOk  = rti.maxSpread <= price*0.002;
+  const trendArrow= (v)=>v>0?`<span class="yes">▲</span>`:`<span class="no">▼</span>`;
 
-  // RTI source badge
-  const spreadColor = rti.maxSpread > price*0.002 ? "var(--warn)" : "var(--yes)";
-  const rtiBadge = `
-    <div class="rti-badge">
-      <b style="color:var(--info)"> CB: ${rti.cbPrice?.toFixed(2)??'—'}
-      ${rti.krakenPrice?`&nbsp;·&nbsp; Kraken: ${rti.krakenPrice.toFixed(2)}`:''}
-      ${rti.bitstampPrice?`&nbsp;·&nbsp; Bitstamp: ${rti.bitstampPrice.toFixed(2)}`:''}
-      &nbsp;·&nbsp; <span style="color:${spreadColor}">Spread: $${rti.maxSpread.toFixed(2)}</span>
-      &nbsp;·&nbsp; <b>Blended: ${price.toFixed(4)}</b>
-    </div>`;
+  // Signal color
+  const sigColor = r.decisionCls==="yes"?"var(--yes)":r.decisionCls==="no"?"var(--no)":r.decisionCls==="warn"?"var(--warn)":"var(--muted)";
+  const sigBg    = r.decisionCls==="yes"?"#052e16":r.decisionCls==="no"?"#450a0a":r.decisionCls==="warn"?"#451a03":"#1a1a1a";
 
-  // Cushion alert banner
-  const cushionAlert = (r.cushionSignal === "CUSHION: YES SIDE") ? `
-    <div style="background:#011f10;border:2px solid var(--yes);border-radius:7px;padding:8px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;font-family:'JetBrains Mono',monospace;">
-      <span style="font-size:20px;line-height:1;">✅</span>
-      <div>
-        <div style="font-size:13px;font-weight:700;color:var(--yes);letter-spacing:.03em;">CUSHION CONFIRMED: YES SIDE</div>
-        <div style="font-size:10px;color:#88cc99;margin-top:2px;">Projected settlement has safe cushion ABOVE target — supports BET YES</div>
-      </div>
-    </div>` :
-    (r.cushionSignal === "CUSHION: NO SIDE") ? `
-    <div style="background:#200010;border:2px solid var(--no);border-radius:7px;padding:8px 12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;font-family:'JetBrains Mono',monospace;">
-      <span style="font-size:20px;line-height:1;">🔴</span>
-      <div>
-        <div style="font-size:13px;font-weight:700;color:var(--no);letter-spacing:.03em;">CUSHION CONFIRMED: NO SIDE</div>
-        <div style="font-size:10px;color:#cc8888;margin-top:2px;">Projected settlement has safe cushion BELOW target — supports BET NO</div>
-      </div>
-    </div>` : "";
+  // Cushion banner
+  const cushionBanner = r.cushionSignal==="CUSHION: YES SIDE"
+    ? `<div class="banner banner-yes">✅ CUSHION: YES SIDE — projected settlement safely above target</div>`
+    : r.cushionSignal==="CUSHION: NO SIDE"
+    ? `<div class="banner banner-no">🔴 CUSHION: NO SIDE — projected settlement safely below target</div>`
+    : "";
 
-  const lateNote = r.lateWin ?
-    `<div class="late-warn">⚡ UNDER 2.5 MIN — Late mode active. Confirmation gate bypassed. Check Coinbase payout before entering.</div>` : "";
+  const lateBanner = r.lateWin
+    ? `<div class="banner banner-late">⚡ UNDER 2.5 MIN — Late mode. Act fast or skip.</div>`
+    : "";
 
-  const refreshNote = lastRefreshTime ?
-    `<div class="refresh-badge">Updated: ${lastRefreshTime.toLocaleTimeString()} ${isAuto?"· Auto every "+$("refreshRate").value+"s":"· Manual"} · Roll15avg: ${r.roll15avg.toFixed(2)} · Nudge: ${r.momentumNudge>0?"+":""}${r.momentumNudge.toFixed(2)}</div>` : "";
-
-  // Signal box: compact for SKIP/WATCH, full for BET YES/NO
-  const isActionable = r.displayDecision === "BET YES" || r.displayDecision === "BET NO";
-  const signalBoxHtml = isActionable ? `
-    <div class="signal-box ${r.boxCls}">
-      <div class="signal-title ${r.decisionCls}">${r.displayDecision}</div>
-      <div class="entry-tag ${r.decisionCls}">${r.entryTiming}</div>
-      <div style="font-size:10px;color:var(--text);margin-bottom:6px;">${r.signalReason}</div>
-      <div class="metric-grid">
-        <div class="metric-item">
-          <div class="metric-label">FLIP RISK</div>
-          <div class="metric-val ${r.flipRiskRatio>=2?"yes":r.flipRiskRatio>=1.2?"warn":"no"}">${r.flipRiskLabel}</div>
-        </div>
-        <div class="metric-item">
-          <div class="metric-label">ATR RATIO</div>
-          <div class="metric-val">${r.flipRiskRatio.toFixed(2)}x</div>
-        </div>
-        <div class="metric-item">
-          <div class="metric-label">TIME LEFT</div>
-          <div class="metric-val ${r.timeLeft<=2?"no":r.timeLeft<=5?"warn":"yes"}">${r.timeLeft.toFixed(1)} min</div>
-        </div>
-        <div class="metric-item">
-          <div class="metric-label">CONFIDENCE</div>
-          <div class="metric-val conf">${r.confidence}%</div>
-        </div>
-        <div class="metric-item">
-          <div class="metric-label">CONFIRMS</div>
-          <div class="metric-val">${r.confirmCount}/2</div>
-        </div>
-        <div class="metric-item">
-          <div class="metric-label">MODE</div>
-          <div class="metric-val info">${$("aggrMode").value.toUpperCase()}</div>
-        </div>
-      </div>
+  // Trap box
+  const trapColor = r.trapCls==="yes"?"var(--yes)":r.trapCls==="no"?"var(--no)":"var(--warn)";
+  const trapBg    = r.trapCls==="yes"?"#052e16":r.trapCls==="no"?"#450a0a":"#451a03";
+  const trapHtml  = r.trapSignal!=="NONE" ? `
+    <div class="trap-box" style="background:${trapBg};border:1.5px solid ${trapColor};">
+      <div class="bold" style="color:${trapColor};font-size:14px;">${r.trapSignal}</div>
+      <div style="font-size:12px;margin-top:4px;">${r.trapWarning}</div>
+      ${r.trapDetail?`<div class="trap-detail">${r.trapDetail}</div>`:""}
+      ${r.trapConflict==="CUSHION WINS"?`<div style="color:var(--yes);font-size:11px;margin-top:5px;">✓ Cushion overrides — settlement likely YES (${(r.avgCushion/r.atr).toFixed(1)}× ATR above target)</div>`:""}
+      <div style="color:var(--muted);font-size:11px;margin-top:5px;">Bull: ${r.bullScore}/11 · Bear: ${r.bearScore}/11</div>
     </div>` : `
-    <div class="signal-box ${r.boxCls}" style="padding:7px 10px;margin-bottom:8px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:5px;">
-        <div>
-          <div class="signal-title ${r.decisionCls}" style="font-size:14px;margin-bottom:2px;">${r.displayDecision}</div>
-          <div class="entry-tag ${r.decisionCls}" style="font-size:10px;padding:2px 7px;margin-bottom:3px;">${r.entryTiming}</div>
-          <div style="font-size:10px;color:var(--muted);">${r.signalReason}</div>
-        </div>
-        <div style="display:flex;flex-wrap:wrap;gap:4px;font-family:'JetBrains Mono',monospace;font-size:10px;">
-          <span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">⏱ <span class="${r.timeLeft<=2?"no":r.timeLeft<=5?"warn":"yes"}">${r.timeLeft.toFixed(1)}m</span></span>
-          <span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">🎯 <span class="conf">${r.confidence}%</span></span>
-          <span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px;">✓ ${r.confirmCount}/2</span>
-          <span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 6px;"><span class="${r.flipRiskRatio>=2?"yes":r.flipRiskRatio>=1.2?"warn":"no"}">${r.flipRiskLabel}</span> risk</span>
-        </div>
-      </div>
+    <div style="font-size:12px;color:var(--muted);padding:4px 0;">
+      ✓ No trap detected &nbsp;·&nbsp; Bull ${r.bullScore}/11 · Bear ${r.bearScore}/11
+      ${r.strongCushionYes?` · <span class="yes">Strong YES cushion blocks bull trap</span>`:""}
+      ${r.strongCushionNo?` · <span class="no">Strong NO cushion blocks bear trap</span>`:""}
     </div>`;
+
+  const refreshNote = lastRefreshTime
+    ? `<div style="font-size:11px;color:var(--muted);margin-top:8px;">Updated ${lastRefreshTime.toLocaleTimeString()} ${isAuto?"· auto "+$("refreshRate").value+"s":""}</div>`
+    : "";
 
   $("result").innerHTML = `
-  <div class="card">
-    ${cushionAlert}
-    ${lateNote}
-    ${rtiBadge}
+  <div>
+    ${cushionBanner}${lateBanner}
 
-    <!-- MAIN SIGNAL -->
-    ${signalBoxHtml}
+    <!-- ROW 1: RTI + SIGNAL side by side -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;">
 
-    <!-- SCORES -->
-    <div style="margin-bottom:10px;">
-      <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:11px;font-family:'JetBrains Mono',monospace;">
-        <span class="yes">YES  ${r.yesScore}/${r.maxScore}</span>
-        <span class="no">NO  ${r.noScore}/${r.maxScore}</span>
+      <!-- RTI Price -->
+      <div class="card" style="padding:6px 8px;">
+        <div style="font-size:9px;color:var(--muted);">RTI (${rti.sources?.join("+") ?? "CB"})</div>
+        <div style="font-size:17px;font-weight:800;color:${price>target?"var(--yes)":"var(--no)"};">${price.toFixed(2)}</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:1px;">Target: <span style="color:var(--text);font-weight:600;">${target.toFixed(2)}</span></div>
+        <div style="font-size:9px;color:${spreadOk?"var(--yes)":"var(--warn)"};margin-top:1px;">Spread $${rti.maxSpread?.toFixed(2)??"—"}</div>
       </div>
-      <div class="score-bar-wrap">
-        <span class="score-label yes">${(r.yes*100).toFixed(0)}%</span>
-        <div class="score-bar"><div class="score-fill-yes" style="width:${r.yes*100}%"></div></div>
-        <div class="score-bar"><div class="score-fill-no" style="width:${r.no*100}%"></div></div>
-        <span class="score-label no">${(r.no*100).toFixed(0)}%</span>
-      </div>
-    </div>
 
-    <hr class="divider">
-
-    <!-- KEY METRICS -->
-<span class="val ${r.trend5Pos?"yes":"no"}">${r.trend5Pos?"▲":"▼"}</span>
-<span class="val ${r.trend10Pos?"yes":"no"}">${r.trend10Pos?"▲":"▼"}</span>
-<span class="val ${r.trend15Pos?"yes":"no"}">${r.trend15Pos?"▲":"▼"} </span> 
-    <div class="row"><span class="lbl">RTI BLENDED PRICE</span><span class="val ${price>target?"yes":"no"}">${price.toFixed(4)}</span></div>
-    <div class="row"><span class="lbl">TARGET</span><span class="val">${target.toFixed(4)}</span></div>
-    <div class="row"><span class="lbl">PROJECTED SETTLEMENT</span><span class="val info">${r.projectedAvg.toFixed(4)}</span></div>
-    <div class="row"><span class="lbl">ROLL15 HISTORY AVG</span><span class="val muted">${r.roll15avg.toFixed(4)}</span></div>
-    <div class="row"><span class="lbl">CUSHION vs TARGET</span>
-      <span class="val ${r.avgCushion>0?"yes":"no"}">${r.avgCushion>0?"+":""}${r.avgCushion.toFixed(4)}</span></div>
-    <div class="row"><span class="lbl">TARGET ZONE</span>
-      <span class="val ${r.targetMagnetZone?"warn":"yes"}">${r.targetMagnetZone?"⚠ TOO CLOSE":"✓ SAFE DIST"}</span></div>
-    <div class="row"><span class="lbl">ATR (1-min candles)</span><span class="val muted">${r.atr.toFixed(4)}</span></div>
-
-   
-
-
-    <hr class="divider">
-
- <!-- SECONDARY SIGNALS -->
-    <div class="row">
-      <span class="lbl">CUSHION SIGNAL</span>
-      <span class="val ${r.cushionCls}">${r.cushionSignal}</span>
-    </div>
-    <div class="row">
-      <span class="lbl">MARKET YES / NO</span>
-      <span class="val muted">${(r.marketYes*100).toFixed(0)}% / ${(r.marketNo*100).toFixed(0)}%</span>
-    </div>
-
-    <!-- TRAP BOX -->
-    ${r.trapSignal!=="NONE" ? `
-    <div style="margin-top:10px;border-radius:8px;padding:12px 14px;
-      border:2px solid ${r.trapCls==="no"?"var(--no)":r.trapCls==="yes"?"var(--yes)":"var(--warn)"};
-      background:${r.trapCls==="no"?"#200010":r.trapCls==="yes"?"#011f10":"#1a1200"};">
-      <div style="font-size:15px;font-weight:700;margin-bottom:6px;
-        color:${r.trapCls==="no"?"var(--no)":r.trapCls==="yes"?"var(--yes)":"var(--warn)"}">
-        ${r.trapSignal}
-      </div>
-      <div style="font-size:12px;margin-bottom:6px;color:var(--text)">${r.trapWarning}</div>
-      ${r.trapDetail?`<div style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;line-height:1.7;margin-bottom:6px">${r.trapDetail}</div>`:""}
-      ${r.trapConflict==="CUSHION WINS"?`
-        <div style="background:#0a1e10;border:1px solid var(--yes);border-radius:5px;padding:5px 9px;font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--yes)">
-          ✓ PROJECTED AVG overrides RSI/MACD — cushion is ${(r.avgCushion).toFixed(1)} (${(r.avgCushion/r.atr).toFixed(1)}× ATR). Settlement likely YES.
-        </div>
-      `:""}
-      <div style="margin-top:6px;font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--muted)">
-        Bull score: ${r.bullScore}/11 · Bear score: ${r.bearScore}/11
-        · Bull possible: ${r.bullTrapPossible?"yes":"<span style='color:var(--yes)'>BLOCKED (strong YES cushion)</span>"}
-        · Bear possible: ${r.bearTrapPossible?"yes":"<span style='color:var(--yes)'>BLOCKED (strong NO cushion)</span>"}
+      <!-- Main Signal -->
+      <div class="card" style="background:${sigBg};border:1.5px solid ${sigColor};padding:6px 8px;">
+        <div class="signal-big" style="color:${sigColor};font-size:18px;">${r.displayDecision}</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:2px;">${r.entryTiming}</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:1px;">${r.signalReason}</div>
       </div>
     </div>
-    ` : `
-    <div style="margin-top:8px;padding:8px 12px;border-radius:6px;background:var(--bg3);border:1px solid var(--border);font-size:11px;font-family:'JetBrains Mono',monospace;line-height:1.7">
-      <span style="color:var(--yes);font-weight:700">✓ NO TRAP</span>
-      <span style="color:var(--muted);margin-left:8px;">Bull: ${r.bullScore}/11 · Bear: ${r.bearScore}/11</span>
-      <br>
-      <span style="color:var(--muted);font-size:10px;">
-        Trap requires: projected avg contradicting live price direction
-        ${r.strongCushionYes?`· <span style="color:var(--yes)">Strong YES cushion ($${r.avgCushion.toFixed(1)}) blocks bull trap</span>`:""}
-        ${r.strongCushionNo?`· <span style="color:var(--no)">Strong NO cushion ($${(-r.avgCushion).toFixed(1)}) blocks bear trap</span>`:""}
-      </span>
+
+    <!-- ROW 2: YES/NO prob + chips -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;">
+      <div class="prob-box prob-yes" style="border-radius:7px;padding:5px;text-align:center;">
+        <div class="prob-pct yes" style="font-size:20px;">${(r.yes*100).toFixed(0)}%</div>
+        <div class="prob-label">YES · ${r.yesScore}/${r.maxScore}</div>
+      </div>
+      <div class="prob-box prob-no" style="border-radius:7px;padding:5px;text-align:center;">
+        <div class="prob-pct no" style="font-size:20px;">${(r.no*100).toFixed(0)}%</div>
+        <div class="prob-label">NO · ${r.noScore}/${r.maxScore}</div>
+      </div>
     </div>
-    `}
 
-<hr class="divider">
+    <!-- CHIPS row -->
+    <div class="chips" style="margin-bottom:5px;">
+      <span class="chip chip-${r.timeLeft<=2?"no":r.timeLeft<=5?"warn":"info"}">⏱ ${r.timeLeft.toFixed(1)}m</span>
+      <span class="chip chip-${r.confidence>=70?"yes":r.confidence>=55?"warn":"no"}">Conf ${r.confidence}%</span>
+      <span class="chip chip-${r.flipRiskRatio>=2?"yes":r.flipRiskRatio>=1.2?"warn":"no"}">${r.flipRiskLabel}</span>
+      <span class="chip chip-muted">${r.confirmCount}/2✓</span>
+      <span class="chip chip-info">${$("aggrMode").value}</span>
+      <span class="chip chip-muted">Mkt ${(r.marketYes*100).toFixed(0)}/${(r.marketNo*100).toFixed(0)}%</span>
+    </div>
 
+    <!-- ROW 3: Price data + Indicators in 2-col card grid -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;">
 
-    <!-- TREND SUMMARY -->
-    <div class="row"><span class="lbl">5m TREND</span>
-      <span class="val ${r.trend5Pos?"yes":"no"}">${r.trend5Pos?"▲":"▼"} ${r.trend5>0?"+":""}${r.trend5.toFixed(4)}</span></div>
-    <div class="row"><span class="lbl">10m TREND</span>
-      <span class="val ${r.trend10Pos?"yes":"no"}">${r.trend10Pos?"▲":"▼"} ${r.trend10>0?"+":""}${r.trend10.toFixed(4)}</span></div>
-    <div class="row"><span class="lbl">15m TREND</span>
-      <span class="val ${r.trend15Pos?"yes":"no"}">${r.trend15Pos?"▲":"▼"} ${r.trend15>0?"+":""}${r.trend15.toFixed(4)}</span></div>
+      <!-- Price & Settlement -->
+      <div class="card" style="padding:6px 8px;">
+        <div class="sec" style="margin-top:0;">Settlement</div>
+        <div class="drow"><span class="lbl">Price</span><span class="val ${price>target?"yes":"no"}">${price.toFixed(1)}</span></div>
+        <div class="drow"><span class="lbl">Target</span><span class="val">${target.toFixed(1)}</span></div>
+        <div class="drow"><span class="lbl">Proj.</span><span class="val info">${r.projectedAvg.toFixed(1)}</span></div>
+        <div class="drow"><span class="lbl">Cushion</span><span class="val ${r.avgCushion>0?"yes":"no"}">${r.avgCushion>0?"+":""}${r.avgCushion.toFixed(1)}</span></div>
+        <div class="drow"><span class="lbl">ATR×</span><span class="val muted">${(Math.abs(r.avgCushion)/r.atr).toFixed(2)}x</span></div>
+        <div class="drow"><span class="lbl">Zone</span><span class="val ${r.targetMagnetZone?"warn":"yes"}">${r.targetMagnetZone?"⚠ Close":"✓ OK"}</span></div>
+        <div class="drow"><span class="lbl">ATR</span><span class="val muted">${r.atr.toFixed(1)}</span></div>
+      </div>
 
-    <!-- INDICATORS -->
-    <table>
-      <tr><th>Indicator</th><th>Value</th><th>Signal</th></tr>
-      <tr><td>RSI (14)</td><td>${rsi.toFixed(1)}</td><td class="${r.rsiCls}">${r.rsiLabel}</td></tr>
-      <tr><td>EMA 9 / 21</td><td>${r.ema9.toFixed(2)} / ${r.ema21.toFixed(2)}</td>
-          <td class="${r.ema9>r.ema21?"yes":"no"}">${r.ema9>r.ema21?"BULLISH":"BEARISH"}</td></tr>
-      <tr><td>MACD Histogram</td><td>—</td><td>${macdText}</td></tr>
-      <tr><td>VWAP</td><td>${r.vwap.toFixed(4)}</td>
-          <td class="${price>r.vwap?"yes":"no"}">${price>r.vwap?"ABOVE":"BELOW"}</td></tr>
-      <tr><td>Candle ${candleIcon}</td>
-          <td>${r.latestCandleGreen?"Green":r.latestCandleRed?"Red":"Flat"} ${r.strongCandle?"(strong)":""}</td>
-          <td class="${r.latestCandleGreen?"yes":r.latestCandleRed?"no":"muted"}">${r.latestCandleGreen?"YES":r.latestCandleRed?"NO":"NEUTRAL"}</td></tr>
-      <tr><td>Volume</td><td>${r.latestVolume.toFixed(0)} / avg ${r.avgVol.toFixed(0)}</td>
-          <td class="${r.volumeSpike?"yes":"muted"}">${r.volumeSpike?"SPIKE":"NORMAL"}</td></tr>
-    </table>
+      <!-- Indicators -->
+      <div class="card" style="padding:6px 8px;">
+        <div class="sec" style="margin-top:0;">Indicators</div>
+        <div class="drow"><span class="lbl">Candle</span><span class="val ${r.latestCandleGreen?"yes":r.latestCandleRed?"no":"muted"}">${r.latestCandleGreen?"🟢":"🔴"}${r.strongCandle?" ★":""}</span></div>
+        <div class="drow"><span class="lbl">Trend</span><span class="val">${trendArrow(r.trend5)}${trendArrow(r.trend10)}${trendArrow(r.trend15)}</span></div>
+        <div class="drow"><span class="lbl">RSI</span><span class="val ${r.rsiCls}">${rsi.toFixed(1)}</span></div>
+        <div class="drow"><span class="lbl">EMA</span><span class="val ${r.ema9>r.ema21?"yes":"no"}">${r.ema9>r.ema21?"▲":"▼"}</span></div>
+        <div class="drow"><span class="lbl">MACD</span><span class="val ${macdCls}">${macdText}</span></div>
+        <div class="drow"><span class="lbl">VWAP</span><span class="val ${price>r.vwap?"yes":"no"}">${price>r.vwap?"↑":"↓"}</span></div>
+        <div class="drow"><span class="lbl">Vol</span><span class="val ${r.volumeSpike?"yes":"muted"}">${r.volumeSpike?"⚡":"—"}</span></div>
+        <div class="drow"><span class="lbl">Volat.</span><span class="val ${r.volatilityVeryHigh?"no":r.volatilityHigh?"warn":"muted"}">${r.volatilityVeryHigh?"Very Hi":r.volatilityHigh?"High":"OK"}</span></div>
+      </div>
+    </div>
 
-    <hr class="divider">
+    <!-- TRAP detector -->
+    <div class="card" style="padding:6px 8px;margin-bottom:5px;">
+      <div class="sec" style="margin-top:0;">Trap Detector</div>
+      ${trapHtml}
+    </div>
 
-   
-    <!-- SCALP BOX -->
-    <div class="scalp-box">
-      <div class="scalp-title ${r.scalpCls}">${r.scalpSignal}</div>
+    <!-- SCALP (only if active) -->
+    ${r.scalpSignal!=="NO SCALP SETUP"?`
+    <div class="card" style="padding:6px 8px;margin-bottom:5px;">
+      <div class="sec" style="margin-top:0;">Scalp</div>
+      <div class="drow"><span class="lbl">Signal</span><span class="val ${r.scalpCls}">${r.scalpSignal}</span></div>
       ${r.scalpEntry!=="—"?`
-        <div class="row"><span class="lbl">ENTRY</span><span class="val" style="font-size:11px;text-align:right;max-width:75%">${r.scalpEntry}</span></div>
-        <div class="row"><span class="lbl">EXIT</span><span class="val" style="font-size:11px;text-align:right;max-width:75%">${r.scalpExit}</span></div>
-        <div class="row"><span class="lbl">STOP</span><span class="val" style="font-size:11px;text-align:right;max-width:75%">${r.scalpStop}</span></div>
-      `:`<div style="font-size:11px;color:var(--muted)">${r.scalpAction}</div>`}
-    </div>
+      <div class="drow"><span class="lbl">Entry</span><span class="val" style="text-align:right;max-width:65%;font-size:9.5px">${r.scalpEntry}</span></div>
+      <div class="drow"><span class="lbl">Exit</span><span class="val" style="text-align:right;max-width:65%;font-size:9.5px">${r.scalpExit}</span></div>`
+      :`<div style="font-size:10px;color:var(--muted);">${r.scalpAction}</div>`}
+    </div>`:""}
 
-    <!-- REASONS -->
-    <div class="reasons-box">
-      <div style="color:var(--warn);font-size:10px;letter-spacing:.06em;margin-bottom:4px;">WHY</div>
-      ${r.reasons.map(x=>`<div>+ ${x}</div>`).join("")}
-      ${r.warnings.length?`<div style="margin-top:6px;color:var(--warn);font-size:10px;letter-spacing:.06em;">WARNINGS</div>${r.warnings.map(x=>`<div class="warn">⚠ ${x}</div>`).join("")}`:""}
-    </div>
-
-    <div style="font-size:10px;color:var(--muted);margin-top:10px;font-family:'JetBrains Mono',monospace;line-height:1.5;">
-      Guide: &gt;10min = too early; 10–6min = early strong only; 6–2.5min = ideal window; &lt;2.5min = late mode; &lt;1min = avoid.<br>
-      Projected avg = live RTI price (${(r.urgency*100).toFixed(0)}% weight) + 15-candle history (${(100-r.urgency*100).toFixed(0)}% weight) + ATR momentum nudge. Clamped ±3 ATR from live price.<br>
-      Scalp = buy cheap probability near target, exit on reprice (not at settlement).
-    </div>
+    <!-- WHY — collapsible -->
+    <details style="margin-bottom:5px;">
+      <summary style="cursor:pointer;font-size:10px;font-weight:700;color:var(--muted);padding:5px 8px;background:var(--card);border:1px solid var(--border);border-radius:6px;list-style:none;">
+        ▶ Why this signal (${r.reasons.length} reasons${r.warnings.length?" · "+r.warnings.length+" warnings":""})
+      </summary>
+      <div style="padding:6px 8px;background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;">
+        ${r.reasons.map(x=>`<div class="reason-item">+ ${x}</div>`).join("")}
+        ${r.warnings.length?`<div style="margin-top:4px;">${r.warnings.map(x=>`<div class="reason-item warn">⚠ ${x}</div>`).join("")}</div>`:""}
+      </div>
+    </details>
 
     ${refreshNote}
   </div>`;
@@ -1534,7 +1450,7 @@ window.addEventListener("DOMContentLoaded",()=>{
 
   $("coin").addEventListener("change",()=>{
     $("result").innerHTML = "";
-    $("market").value     = "";
+    const _m=$("market"); if(_m) _m.value="";
     lastRefreshTime       = null;
     Object.keys(localStorage)
       .filter(k=>k.startsWith("conf_"))
