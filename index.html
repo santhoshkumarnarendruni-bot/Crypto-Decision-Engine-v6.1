@@ -91,19 +91,21 @@
   <option value="HYPE-USD">HYPE</option>
 </select>
 
+<!-- Target -->
 <input id="target" type="number" step="0.0001" placeholder="⟳ Fetching target from Kalshi…" readonly style="opacity:0.6;">
 
-<!-- market input: auto-filled from Kalshi bid/ask, can be overridden -->
+<!-- Market YES prob -->
 <input id="market" type="number" step="0.01" min="0" max="1"
   placeholder="Market YES prob (auto-filled from Kalshi bid/ask)">
 
-<div style="display:flex;gap:8px;">
-  <select id="aggrMode" style="flex:1;">
+<!-- Mode + Refresh on one row -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:5px;">
+  <select id="aggrMode" style="margin-bottom:0;">
     <option value="conservative">Conservative</option>
     <option value="balanced" selected>Balanced</option>
     <option value="aggressive">Aggressive</option>
   </select>
-  <select id="refreshRate" style="flex:1;">
+  <select id="refreshRate" style="margin-bottom:0;">
     <option value="30">Auto 30s</option>
     <option value="20">Auto 20s</option>
     <option value="15">Auto 15s</option>
@@ -111,8 +113,11 @@
   </select>
 </div>
 
-<button class="btn btn-green" id="btnAnalyze" onclick="analyzeWithRefresh()">▶ Analyze</button>
-<button class="btn btn-auto" id="btnAuto" onclick="toggleAuto()">⟳ Start Auto-Refresh</button>
+<!-- Analyze + Auto on one row -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:5px;">
+  <button class="btn btn-green" id="btnAnalyze" onclick="analyzeWithRefresh()" style="margin-bottom:0;">▶ Analyze</button>
+  <button class="btn btn-auto" id="btnAuto" onclick="toggleAuto()" style="margin-bottom:0;">⟳ Auto-Refresh</button>
+</div>
 
 <div class="timer-row">
   <span>Next settlement:</span>
@@ -149,31 +154,62 @@
 
 <!-- Bet Panel (shown after key is loaded) -->
 <div id="betPanel" style="display:none;margin-bottom:8px;background:#0a1620;border:1px solid #1a3a6a;
-  border-radius:7px;padding:10px;">
-  <div style="font-size:11px;font-weight:700;color:var(--info);font-family:'JetBrains Mono',monospace;
-    margin-bottom:8px;">📤 Place Bet on Kalshi</div>
-  <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">
-    <input id="betCount" type="number" min="1" value="1" placeholder="Contracts"
-      style="width:90px;font-family:'JetBrains Mono',monospace;font-size:12px;">
-    <span style="font-size:10px;color:var(--muted);font-family:'JetBrains Mono',monospace;">contracts</span>
+  border-radius:7px;padding:8px 10px;">
+  <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:6px;letter-spacing:.04em;">
+    📤 PLACE BET
+  </div>
+
+  <!-- Dollar amount input + live payout preview -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px;">
+    <div>
+      <div style="font-size:9px;color:var(--muted);margin-bottom:2px;">Amount ($)</div>
+      <input id="betDollars" type="number" min="1" value="10" step="1"
+        placeholder="$ amount" oninput="updatePayoutPreview()"
+        style="width:100%;font-size:12px;font-weight:700;text-align:center;">
+    </div>
+    <div>
+      <div style="font-size:9px;color:var(--muted);margin-bottom:2px;">Contracts (auto)</div>
+      <input id="betCount" type="number" min="1" value="10" readonly
+        style="width:100%;font-size:11px;text-align:center;opacity:0.7;">
+    </div>
+  </div>
+
+  <!-- Payout preview cards -->
+  <div id="payoutPreview" style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px;">
+    <div style="background:#052e16;border:1px solid var(--yes);border-radius:6px;padding:5px 7px;text-align:center;">
+      <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;">If YES wins</div>
+      <div id="payoutYes" style="font-size:16px;font-weight:800;color:var(--yes);line-height:1.2;">—</div>
+      <div id="profitYes" style="font-size:9px;color:var(--muted);">profit: —</div>
+      <div id="priceYes"  style="font-size:8px;color:var(--muted);">@ —¢ per contract</div>
+    </div>
+    <div style="background:#450a0a;border:1px solid var(--no);border-radius:6px;padding:5px 7px;text-align:center;">
+      <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;">If NO wins</div>
+      <div id="payoutNo"  style="font-size:16px;font-weight:800;color:var(--no);line-height:1.2;">—</div>
+      <div id="profitNo"  style="font-size:9px;color:var(--muted);">profit: —</div>
+      <div id="priceNo"   style="font-size:8px;color:var(--muted);">@ —¢ per contract</div>
+    </div>
+  </div>
+
+  <!-- Bet buttons -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px;">
     <button id="betBtnYES" onclick="placeBetViaProxy('yes')"
-      style="flex:1;padding:8px;border-radius:5px;border:none;
+      style="padding:8px;border-radius:5px;border:none;
         background:linear-gradient(135deg,#008844,#005522);color:#fff;
-        font-weight:700;font-size:13px;cursor:pointer;font-family:'Space Grotesk',sans-serif;">
+        font-weight:800;font-size:12px;cursor:pointer;">
       🟢 BET YES
     </button>
     <button id="betBtnNO" onclick="placeBetViaProxy('no')"
-      style="flex:1;padding:8px;border-radius:5px;border:none;
+      style="padding:8px;border-radius:5px;border:none;
         background:linear-gradient(135deg,#cc2233,#881122);color:#fff;
-        font-weight:700;font-size:13px;cursor:pointer;font-family:'Space Grotesk',sans-serif;">
+        font-weight:800;font-size:12px;cursor:pointer;">
       🔴 BET NO
     </button>
   </div>
-  <div id="betLog" style="display:none;font-size:10px;font-family:'JetBrains Mono',monospace;
-    padding:6px 9px;background:var(--bg3);border-radius:5px;border:1px solid var(--border);
-    line-height:1.6;"></div>
-  <div style="font-size:9px;color:var(--muted);font-family:'JetBrains Mono',monospace;margin-top:5px;">
-    Places a fill-or-kill limit order at current Kalshi market price. Analyze first to confirm signal.
+
+  <div id="betLog" style="display:none;font-size:9.5px;font-family:'JetBrains Mono',monospace;
+    padding:5px 8px;background:#0d1a0d;border-radius:5px;border:1px solid #1a3a1a;line-height:1.6;"></div>
+  <div style="font-size:8.5px;color:var(--muted);margin-top:4px;line-height:1.4;">
+    Each contract pays $1 if you win. Cost = price per contract × qty. Kalshi takes ~5% fee on profit.
   </div>
 </div>
 
@@ -1400,6 +1436,8 @@ async function runOnce(){
 
     lastRefreshTime = new Date();
     renderResult(r, rtiData, kalshiLive, product, price, target, rsi, vol);
+    // Update payout preview with fresh Kalshi prices
+    if($("betPanel").style.display !== "none") updatePayoutPreview();
 
   } catch(e){
     console.error(e);
@@ -1530,7 +1568,13 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
         <div style="font-size:9px;color:var(--muted);">RTI (${rti.sources?.join("+") ?? "CB"})</div>
         <div style="font-size:17px;font-weight:800;color:${price>target?"var(--yes)":"var(--no)"};">${price.toFixed(2)}</div>
         <div style="font-size:9px;color:var(--muted);margin-top:1px;">Target: <span style="color:var(--text);font-weight:600;">${target.toFixed(2)}</span></div>
+        <!-- Diff = RTI - Target, green if positive, red if negative -->
+        <div style="font-size:11px;font-weight:800;margin-top:2px;color:${(price-target)>=0?"var(--yes)":"var(--no)"};">
+          ${(price-target)>=0?"+":""}${(price-target).toFixed(2)}
+          <span style="font-size:8px;font-weight:400;color:var(--muted);">vs target</span>
+        </div>
         <div style="font-size:9px;color:${spreadOk?"var(--yes)":"var(--warn)"};margin-top:1px;">Spread $${rti.maxSpread?.toFixed(2)??"—"}</div>
+
       </div>
 
       <!-- Main Signal -->
@@ -1631,7 +1675,12 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
         <div class="drow"><span class="lbl">MACD</span><span class="val ${macdCls}">${macdText}</span></div>
         <div class="drow"><span class="lbl">VWAP</span><span class="val ${price>r.vwap?"yes":"no"}">${price>r.vwap?"↑":"↓"}</span></div>
         <div class="drow"><span class="lbl">Vol</span><span class="val ${r.volumeSpike?"yes":"muted"}">${r.volumeSpike?"⚡":"—"}</span></div>
-        <div class="drow"><span class="lbl">Volat.</span><span class="val ${r.volatilityVeryHigh?"no":r.volatilityHigh?"warn":"muted"}">${r.volatilityVeryHigh?"Very Hi":r.volatilityHigh?"High":"OK"}</span></div>
+        <div class="drow"><span class="lbl">Volat.</span>
+          <span class="val ${r.volatilityVeryHigh?"no":r.volatilityHigh?"warn":"muted"}">
+            ${(r.volatilityPct*100).toFixed(3)}%
+            <span style="font-size:8px;margin-left:2px;">(${r.volatilityVeryHigh?"Very High":r.volatilityHigh?"High":"Normal"})</span>
+          </span>
+        </div>
       </div>
     </div>
 
@@ -1860,20 +1909,85 @@ async function kalshiAuthHeaders(method, path){
   };
 }
 
+// ── Payout Preview Calculator ────────────────────────────────────────────────
+// Kalshi contracts: each contract costs X¢ and pays $1 if you win.
+// Profit = ($1 - cost) × contracts. Loss = cost × contracts.
+// Fee: ~5% of profit (Kalshi charges on winnings only).
+function updatePayoutPreview(){
+  const dollars = parseFloat($("betDollars").value) || 0;
+  const kr      = window._kalshiResult;
+
+  // Get current YES and NO prices from latest Kalshi data
+  const yesBid = kr?.yesBid ?? null;
+  const yesAsk = kr?.yesAsk ?? null;
+  const noBid  = yesBid != null ? 1 - yesBid : null;
+  const noAsk  = yesAsk != null ? 1 - yesAsk : null;
+
+  // Buy price = ask price (what you pay to enter)
+  const yesBuyPrice = yesAsk ?? (yesBid != null ? yesBid + 0.01 : null);
+  const noBuyPrice  = noAsk  ?? (noBid  != null ? noBid  + 0.01 : null);
+
+  function calcPayout(buyPrice, dollars){
+    if(!buyPrice || buyPrice <= 0 || buyPrice >= 1) return null;
+    const contracts  = Math.floor(dollars / buyPrice);  // whole contracts only
+    const totalCost  = contracts * buyPrice;
+    const payout     = contracts * 1.00;                // $1 per contract if win
+    const grossProfit = payout - totalCost;
+    const fee        = grossProfit * 0.05;              // ~5% Kalshi fee on profit
+    const netProfit  = grossProfit - fee;
+    const loss       = totalCost;                       // if you lose = cost gone
+    return { contracts, totalCost, payout, netProfit, loss, buyPrice };
+  }
+
+  const yCalc = yesBuyPrice != null ? calcPayout(yesBuyPrice, dollars) : null;
+  const nCalc = noBuyPrice  != null ? calcPayout(noBuyPrice,  dollars) : null;
+
+  // Update YES payout card
+  if(yCalc && yCalc.contracts > 0){
+    $("payoutYes").textContent = `$${yCalc.payout.toFixed(2)}`;
+    $("profitYes").textContent = `profit +$${yCalc.netProfit.toFixed(2)} / loss -$${yCalc.loss.toFixed(2)}`;
+    $("priceYes").textContent  = `${yCalc.contracts} contracts @ ${(yCalc.buyPrice*100).toFixed(0)}¢`;
+  } else {
+    $("payoutYes").textContent = "—";
+    $("profitYes").textContent = "enter amount above";
+    $("priceYes").textContent  = yesBuyPrice ? `@ ${(yesBuyPrice*100).toFixed(0)}¢ per contract` : "price unavailable";
+  }
+
+  // Update NO payout card
+  if(nCalc && nCalc.contracts > 0){
+    $("payoutNo").textContent = `$${nCalc.payout.toFixed(2)}`;
+    $("profitNo").textContent = `profit +$${nCalc.netProfit.toFixed(2)} / loss -$${nCalc.loss.toFixed(2)}`;
+    $("priceNo").textContent  = `${nCalc.contracts} contracts @ ${(nCalc.buyPrice*100).toFixed(0)}¢`;
+  } else {
+    $("payoutNo").textContent = "—";
+    $("profitNo").textContent = "enter amount above";
+    $("priceNo").textContent  = noBuyPrice ? `@ ${(noBuyPrice*100).toFixed(0)}¢ per contract` : "price unavailable";
+  }
+
+  // Auto-fill betCount for whichever side is currently leading in signals
+  // (updated again on BET YES/NO click to use actual side chosen)
+  if(yCalc) $("betCount").value = yCalc.contracts;
+}
+
 async function placeBetViaProxy(side){
   // side = "yes" or "no"
   const kr = window._kalshiResult;
   if(!kr){ alert("No Kalshi market loaded — analyze first."); return; }
   if(!_kalshiCrypto){ alert("Load your Kalshi API key first (see key section)."); return; }
 
-  const countStr = $("betCount").value.trim();
-  const count    = parseInt(countStr);
-  if(!count || count < 1){ alert("Enter number of contracts (min 1)."); return; }
+  // Recalculate contracts from dollar amount for the chosen side
+  const dollars    = parseFloat($("betDollars").value) || 0;
+  const yesBuyP    = kr.yesAsk ?? (kr.yesBid != null ? kr.yesBid + 0.01 : 0.50);
+  const noBuyP     = (kr.yesAsk != null ? 1 - kr.yesAsk : null) ??
+                     (kr.yesBid != null ? 1 - kr.yesBid + 0.01 : 0.50);
+  const buyPrice   = side === "yes" ? yesBuyP : noBuyP;
+  const count      = dollars > 0 ? Math.max(1, Math.floor(dollars / buyPrice)) : parseInt($("betCount").value);
+  if(!count || count < 1){ alert("Enter a dollar amount to bet."); return; }
+  $("betCount").value = count;
 
-  // Get current price to use as limit price (bid for yes, ask for no)
   const yesPrice = side === "yes"
-    ? (kr.yesAsk != null ? Math.round(kr.yesAsk * 100) : Math.round(kr.yesBid * 100) + 1)
-    : (kr.yesBid != null ? Math.round((1 - kr.yesBid) * 100) : 50);
+    ? Math.round(yesBuyP * 100)
+    : Math.round((1 - noBuyP) * 100);
 
   const path    = "/trade-api/v2/portfolio/orders";
   const headers = await kalshiAuthHeaders("POST", path);
@@ -1939,6 +2053,7 @@ async function loadKalshiKey(){
     status.textContent = "✓ Key loaded — ready to bet";
     status.style.color = "var(--yes)";
     $("betPanel").style.display = "block";
+    updatePayoutPreview();
   } catch(e){
     status.textContent = "✗ Invalid key: "+e.message;
     status.style.color = "var(--no)";
