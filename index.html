@@ -490,6 +490,385 @@ function applyConfirmation(product, rawDecision){
 }
 
 // ─── Core Analysis ────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// UNIFIED TRAP ENGINE
+// Replaces 3 old separate systems with one clear priority hierarchy:
+//
+//  TIER 1 — VWAP + Market Conflict (strongest, uses real market probability)
+//    When market probability and VWAP/trend clearly disagree → override signal
+//
+//  TIER 2 — Projection Conflict (second, uses settlement estimate)
+//    When projected settlement avg contradicts live price → projection trap
+//
+//  TIER 3 — RSI Momentum Divergence (weakest, uses RSI + candle)
+//    When RSI oversold/overbought contradicts price direction → bounce/pullback
+//
+// RULES:
+//  - Only ONE trap signal fires (highest tier wins, no stacking)
+//  - Every actionable trap requires cushion ≥ 1.5× ATR (prevents $2-cushion bets)
+//  - Magnet zone (price too close to target) blocks all actionable traps
+//  - Safety filters cancel unsafe YES/NO signals (strong opposing trend)
+//  - VWAP override also adjusts yes probability and confidence
+// ══════════════════════════════════════════════════════════════════════════════
+
+function detectTraps({
+  // Price & target
+  price, target, projectedAvg, latestAvg,
+  // VWAP & trends
+  vwap, trend5, trend10,
+  // RSI, MACD, EMA, candle
+  rsi, macdBullish, ema9, ema21,
+  latestCandleGreen, latestCandleRed, volumeSpike,
+  // Volatility & ATR
+  vol, atr,
+  // Derived values
+  avgCushion, avgDistance, cushionSignal, targetMagnetZone,
+  // Probability inputs (0-1)
+  yes, no, timeLeft
+}){
+
+  // ── Shared computed values ──────────────────────────────────────────────────
+  const priceAbove    = price > target;
+  const priceBelow    = price < target;
+  const projAbove     = projectedAvg > target;
+  const projBelow     = projectedAvg < target;
+  const aboveVWAP     = price > vwap;
+  const belowVWAP     = price < vwap;
+
+  const t5Bull        = trend5  > 0;
+  const t5Bear        = trend5  < 0;
+  const t10Bull       = trend10 > 0;
+  const t10Bear       = trend10 < 0;
+  const t10WeakPos    = trend10 >  0 && trend10 <=  35;
+  const t10WeakNeg    = trend10 <  0 && trend10 >= -35;
+  const t10StrongPos  = trend10 > 80;
+  const t10StrongNeg  = trend10 < -80;
+
+  const yesProb       = yes * 100;
+  const noProb        = no  * 100;
+
+  // Cushion vs volatility (for VWAP system)
+  const absCushionVol = Math.abs(price - target);
+  const weakCushion   = absCushionVol < vol * 2.0;
+  const veryStrong    = absCushionVol > vol * 2.5;
+
+  // Cushion vs ATR (for projection system — stricter)
+  const projBarelyA   = projAbove && (projectedAvg - target) < atr * 0.4;
+  const projBarelyB   = projBelow && (target - projectedAvg) < atr * 0.4;
+  const strongCushYes = projAbove && (projectedAvg - target) >= atr * 1.5;
+  const strongCushNo  = projBelow && (target - projectedAvg) >= atr * 1.5;
+
+  // Gate: cushion must be ≥ 1.5 ATR for any actionable trap
+  const cushionOk     = avgDistance >= atr * 1.5;
+  const magnetBlocked = targetMagnetZone;
+
+  // Cushion vs trap direction conflict
+  const cushionWins =
+    (avgCushion > 0 && projAbove && cushionSignal.includes("YES")) ||
+    (avgCushion < 0 && projBelow && cushionSignal.includes("NO"));
+
+  // Output object — will be filled by whichever tier fires first
+  let trap = {
+    signal:       "NONE",
+    tier:         0,          // 1=VWAP, 2=Projection, 3=RSI — for debugging
+    action:       "FOLLOW NORMAL ENGINE",
+    cls:          "muted",
+    warning:      "",
+    detail:       "",
+    conflict:     "",
+    yesDelta:     0,          // probability adjustment to apply
+    confBoost:    0,          // confidence adjustment
+    bullScore:    0,
+    bearScore:    0,
+    strongCushYes, strongCushNo,
+    bullPossible: false,
+    bearPossible: false,
+    weakCushion,  veryStrong,
+    cushion:      price - target,
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // TIER 1: VWAP + Market Conflict (from v39 — highest priority)
+  // Logic: when market probability clearly favors one side BUT VWAP and BOTH
+  // short-term trends point the other way → the market price is misleading.
+  // This is the strongest signal because it uses the ACTUAL market order book.
+  // ════════════════════════════════════════════════════════════════════════════
+
+  let vwapSignal = "NONE", vwapAction = "FOLLOW", vwapCls = "muted", vwapBoost = 0, vwapReason = "";
+
+  // T1-A: BULLISH OVERRIDE → BET YES
+  // Price below target BUT above VWAP + both trends bullish + NO probability high
+  // = Bear trap: market thinks NO but momentum strongly says YES
+  if(priceBelow && weakCushion && aboveVWAP && t5Bull && t10Bull && timeLeft > 5 && noProb > 65){
+    vwapSignal = "BULLISH OVERRIDE → BET YES";
+    vwapAction = "BET YES"; vwapCls = "yes"; vwapBoost = 18;
+    vwapReason = "Price below target but ABOVE VWAP with both trends bullish. NO probability is high — bear trap. Market probability is misleading.";
+  }
+  // T1-B: BEAR TRAP DETECTED (softer — no price-below-target required)
+  else if(noProb > 65 && t5Bull && t10Bull && aboveVWAP){
+    vwapSignal = "BEAR TRAP DETECTED";
+    vwapAction = "BET YES or WAIT"; vwapCls = "yes"; vwapBoost = 12;
+    vwapReason = "Market probability favors NO, but price is above VWAP and both trends bullish. NO may be misleading.";
+  }
+  // T1-C: VWAP Bullish Recovery vs weak 10m downtrend (early window)
+  else if(priceBelow && aboveVWAP && t5Bull && t10WeakNeg && weakCushion &&
+          timeLeft >= 8 && timeLeft <= 10 && noProb >= 65 && noProb <= 80){
+    vwapSignal = "VWAP BULLISH RECOVERY";
+    vwapAction = "BET YES / WAIT"; vwapCls = "yes"; vwapBoost = 10;
+    vwapReason = "5m trend positive, 10m weakly negative. Price above VWAP — YES recovery is reasonable.";
+  }
+
+  // YES safety filter: cancel if 10m strongly negative + not above VWAP
+  if(vwapAction.includes("YES") && t10StrongNeg && !aboveVWAP){
+    vwapSignal = "AVOID YES"; vwapAction = "WAIT"; vwapCls = "warn"; vwapBoost = -10;
+    vwapReason = "10m trend strongly negative and price not above VWAP. YES setup unsafe — wait.";
+  }
+
+  // T1-D: BEARISH OVERRIDE → BET NO
+  // Price above target BUT below VWAP + both trends bearish + YES probability high
+  // = Bull trap: market thinks YES but momentum strongly says NO
+  if(priceAbove && weakCushion && belowVWAP && t5Bear && t10Bear && timeLeft > 5 && yesProb > 65){
+    vwapSignal = "BEARISH OVERRIDE → BET NO";
+    vwapAction = "BET NO"; vwapCls = "no"; vwapBoost = 18;
+    vwapReason = "Price above target but BELOW VWAP with both trends bearish. YES probability is high — bull trap. Fade the YES.";
+  }
+  // T1-E: BULL TRAP DETECTED (softer)
+  else if(yesProb > 65 && t5Bear && t10Bear && belowVWAP){
+    vwapSignal = "BULL TRAP DETECTED";
+    vwapAction = "BET NO or WAIT"; vwapCls = "no"; vwapBoost = 12;
+    vwapReason = "Market probability favors YES, but price below VWAP and both trends bearish. YES may be misleading.";
+  }
+  // T1-F: VWAP Bearish Pullback vs weak 10m trend (early window)
+  else if(priceAbove && belowVWAP && t5Bear && t10WeakPos && weakCushion &&
+          timeLeft >= 8 && timeLeft <= 10 && yesProb >= 65 && yesProb <= 80){
+    vwapSignal = "VWAP BEARISH PULLBACK";
+    vwapAction = "BET NO / WAIT"; vwapCls = "no"; vwapBoost = 10;
+    vwapReason = "5m trend negative, 10m weakly positive. Price below VWAP — NO is reasonable.";
+  }
+
+  // NO safety filter: cancel if 10m strongly positive + not below VWAP
+  if(vwapAction.includes("NO") && t10StrongPos && !belowVWAP){
+    vwapSignal = "AVOID NO"; vwapAction = "WAIT"; vwapCls = "warn"; vwapBoost = -10;
+    vwapReason = "10m trend strongly positive and price not below VWAP. NO setup unsafe — wait.";
+  }
+
+  // Apply Tier 1 if it fired something meaningful
+  if(vwapSignal !== "NONE"){
+    trap.signal    = vwapSignal;
+    trap.tier      = 1;
+    trap.action    = vwapAction;
+    trap.cls       = vwapCls;
+    trap.warning   = vwapReason;
+    trap.detail    = `VWAP: ${price > vwap ? "above" : "below"} (${vwap.toFixed(1)}) · Trends: 5m ${t5Bull?"▲":"▼"} 10m ${t10Bull?"▲":"▼"} · Market YES/NO: ${yesProb.toFixed(0)}/${noProb.toFixed(0)}%`;
+    trap.yesDelta  = vwapAction.includes("YES") ? 0.09 : vwapAction.includes("NO") ? -0.09 : 0;
+    trap.confBoost = vwapBoost;
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // TIER 2: Projection Conflict (only runs if Tier 1 did NOT fire a strong signal)
+  // Logic: projected settlement avg disagrees with live price direction.
+  // This means even though price crossed the target, the 15-min average
+  // is tracking to settle on the other side.
+  // ════════════════════════════════════════════════════════════════════════════
+
+  // Compute scoring for Tier 2
+  const t2BullPossible = priceAbove && (projBelow || projBarelyA) && !strongCushYes;
+  const t2BearPossible = priceBelow && (projAbove || projBarelyB) && !strongCushNo;
+
+  const rsiOB       = rsi >= 70;
+  const rsiOS       = rsi <= 30;
+  const macdBearDiv = macdBullish === false && priceAbove;
+  const macdBullDiv = macdBullish === true  && priceBelow;
+  const t5Rev       = trend5 < 0 && trend10 > 0;
+  const t5Rec       = trend5 > 0 && trend10 < 0;
+  const t5Weaker    = trend5 < trend10;
+  const t5Stronger  = trend5 > trend10;
+  const justAbove   = priceAbove && (price - target) < atr * 0.5;
+  const justBelow   = priceBelow && (target - price) < atr * 0.5;
+  const weakPush    = !volumeSpike && latestCandleGreen && justAbove;
+  const weakDrop    = !volumeSpike && latestCandleRed   && justBelow;
+  const narrowEMAup = ema9 > ema21 && (ema9 - ema21) < atr * 0.4;
+  const narrowEMAdn = ema9 < ema21 && (ema21 - ema9) < atr * 0.4;
+
+  const bullScore = !t2BullPossible ? 0 :
+    (priceAbove?1:0) + (projBelow?3:projBarelyA?1:0) +
+    (t5Rev?2:t5Weaker?1:0) + (rsiOB?2:0) + (macdBearDiv?2:0) +
+    (weakPush?1:0) + (narrowEMAup?1:0);
+
+  const bearScore = !t2BearPossible ? 0 :
+    (priceBelow?1:0) + (projAbove?3:projBarelyB?1:0) +
+    (t5Rec?2:t5Stronger?1:0) + (rsiOS?2:0) + (macdBullDiv?2:0) +
+    (weakDrop?1:0) + (narrowEMAdn?1:0);
+
+  trap.bullScore   = bullScore;
+  trap.bearScore   = bearScore;
+  trap.bullPossible = t2BullPossible;
+  trap.bearPossible = t2BearPossible;
+
+  // Only override Tier 1 if Tier 1 returned "FOLLOW NORMAL ENGINE"
+  // or Tier 1 was just AVOID (safety filter, not a real trap)
+  const tier1Inactive = trap.tier === 0 ||
+    (trap.tier === 1 && (vwapAction === "FOLLOW" || vwapAction === "WAIT"));
+
+  if(tier1Inactive){
+    if(bullScore >= 6 && !cushionWins && cushionOk && !magnetBlocked){
+      trap.signal    = "⚠ BULL TRAP";
+      trap.tier      = 2;
+      trap.action    = "BET NO";
+      trap.cls       = "no";
+      trap.warning   = "RTI price above target but projected settlement BELOW or barely above → FAKE BREAKOUT → BET NO";
+      trap.detail    = [
+        projBelow   ? "Projected avg BELOW target despite price being above" : "",
+        projBarelyA ? `Projected avg only $${(projectedAvg-target).toFixed(1)} above (< 0.4 ATR)` : "",
+        t5Rev       ? "5m trend reversed bearish while 10m still positive" : "",
+        rsiOB       ? `RSI ${rsi.toFixed(0)} — overbought` : "",
+        macdBearDiv ? "MACD bearish divergence" : "",
+        weakPush    ? `Price barely $${(price-target).toFixed(1)} above target, no volume` : "",
+      ].filter(Boolean).join(" · ");
+      trap.yesDelta  = -0.09;
+      trap.confBoost = 12;
+    } else if(bullScore >= 6 && cushionWins){
+      trap.signal    = "⚡ RSI/MACD CAUTION";
+      trap.tier      = 2;
+      trap.action    = "WATCH";
+      trap.cls       = "warn";
+      trap.warning   = `RSI/MACD bearish BUT projected avg $${(projectedAvg-target).toFixed(1)} above target. Cushion overrides trap — settlement looks YES. Watch for pullback.`;
+      trap.detail    = `Bull score ${bullScore}/11 — blocked by strong YES cushion.`;
+      trap.conflict  = "CUSHION WINS";
+      trap.yesDelta  = 0;
+      trap.confBoost = -5;
+    } else if(bullScore >= 4 && priceAbove && !strongCushYes){
+      trap.signal    = "👀 BULL TRAP WATCH";
+      trap.tier      = 2;
+      trap.action    = "WATCH";
+      trap.cls       = "warn";
+      const why = magnetBlocked ? "MAGNET ZONE" : !cushionOk ? `Cushion ${avgDistance.toFixed(1)} < ${(atr*1.5).toFixed(1)} needed` : "";
+      trap.warning   = `Reversal signals present${why?" — "+why:""} — watch only, not a bet.`;
+      trap.detail    = `Score ${bullScore}/11 — needs projected avg below target to confirm.`;
+      trap.yesDelta  = -0.03;
+      trap.confBoost = -5;
+    }
+
+    if(trap.tier < 2){
+      if(bearScore >= 6 && !cushionWins && cushionOk && !magnetBlocked){
+        trap.signal    = "⚠ BEAR TRAP";
+        trap.tier      = 2;
+        trap.action    = "BET YES";
+        trap.cls       = "yes";
+        trap.warning   = "RTI price below target but projected settlement ABOVE or barely below → FAKE BREAKDOWN → BET YES";
+        trap.detail    = [
+          projAbove   ? "Projected avg ABOVE target despite price being below" : "",
+          projBarelyB ? `Projected avg only $${(target-projectedAvg).toFixed(1)} below (< 0.4 ATR)` : "",
+          t5Rec       ? "5m trend recovered bullish while 10m still negative" : "",
+          rsiOS       ? `RSI ${rsi.toFixed(0)} — oversold` : "",
+          macdBullDiv ? "MACD bullish divergence" : "",
+          weakDrop    ? `Price barely $${(target-price).toFixed(1)} below target, no volume` : "",
+        ].filter(Boolean).join(" · ");
+        trap.yesDelta  = 0.09;
+        trap.confBoost = 12;
+      } else if(bearScore >= 4 && priceBelow && !strongCushNo){
+        trap.signal    = "👀 BEAR TRAP WATCH";
+        trap.tier      = 2;
+        trap.action    = "WATCH";
+        trap.cls       = "warn";
+        const why = magnetBlocked ? "MAGNET ZONE" : !cushionOk ? `Cushion ${avgDistance.toFixed(1)} < ${(atr*1.5).toFixed(1)} needed` : "";
+        trap.warning   = `Recovery signals present${why?" — "+why:""} — watch only, not a bet.`;
+        trap.detail    = `Score ${bearScore}/11 — needs projected avg above target to confirm.`;
+        trap.yesDelta  = 0.03;
+        trap.confBoost = -5;
+      }
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // TIER 3: RSI Momentum Divergence (only if neither Tier 1 nor Tier 2 fired)
+  // Logic: RSI oversold/overbought + candle + MACD/EMA recovering
+  // Weakest signal — only visible as earlyBias/chip, no direct BET override
+  // ════════════════════════════════════════════════════════════════════════════
+
+  const bounceDet   = rsi <= 42 && rsi >= 22 && (latestCandleGreen || trend5 > trend10);
+  const pullbackDet = rsi >= 58 && rsi <= 78 && (latestCandleRed   || trend5 < trend10);
+  const macdBullishMom = macdBullish === true  && priceBelow && projBelow;
+  const macdBearishMom = macdBullish === false && priceAbove && projAbove;
+
+  const bearTrapBounce  = priceBelow && bounceDet  && (macdBullishMom || (ema9 > ema21 && trend5 > 0));
+  const bullTrapPullback = priceAbove && pullbackDet && (macdBearishMom || (ema9 < ema21 && trend5 < 0));
+
+  if(trap.tier === 0){
+    // No higher-tier trap fired — let Tier 3 show as a watch/bias signal
+    if(bearTrapBounce){
+      trap.signal    = "🔄 BOUNCE SIGNAL";
+      trap.tier      = 3;
+      trap.action    = "WATCH YES";
+      trap.cls       = "yes";
+      trap.warning   = "RSI oversold + recovering momentum while price below target — possible bounce back above target.";
+      trap.detail    = `RSI ${rsi.toFixed(1)} (oversold) · ${latestCandleGreen?"Green candle":"Trend recovering"} · ${ema9>ema21?"EMA bullish":"MACD turning up"}`;
+      trap.yesDelta  = 0.04;
+      trap.confBoost = 5;
+    } else if(bullTrapPullback){
+      trap.signal    = "🔄 PULLBACK SIGNAL";
+      trap.tier      = 3;
+      trap.action    = "WATCH NO";
+      trap.cls       = "no";
+      trap.warning   = "RSI overbought + fading momentum while price above target — possible pullback below target.";
+      trap.detail    = `RSI ${rsi.toFixed(1)} (overbought) · ${latestCandleRed?"Red candle":"Trend fading"} · ${ema9<ema21?"EMA bearish":"MACD turning down"}`;
+      trap.yesDelta  = -0.04;
+      trap.confBoost = 5;
+    }
+  }
+
+  // ── earlyBias (shown at all times, even > 10 min) ──────────────────────────
+  // Strong directional bias: all major indicators aligned on one side
+  let earlyBias = "", earlyBiasClass = "muted";
+  if(
+    price > target && latestAvg > target && projectedAvg > target &&
+    t5Bull && t10Bull && ema9 > ema21 && aboveVWAP &&
+    rsi > 52 && rsi < 68 && avgCushion >= avgDistance*2 && !targetMagnetZone
+  ){
+    earlyBias = "📈 EARLY BIAS: YES likely — wait for 6–3 min ideal window";
+    earlyBiasClass = "yes";
+  } else if(
+    price < target && latestAvg < target && projectedAvg < target &&
+    t5Bear && t10Bear && ema9 < ema21 && belowVWAP &&
+    rsi < 48 && rsi > 32 && avgCushion <= -avgDistance*2 && !targetMagnetZone
+  ){
+    earlyBias = "📉 EARLY BIAS: NO likely — wait for 6–3 min ideal window";
+    earlyBiasClass = "no";
+  } else if(trap.cls === "yes" && trap.tier > 0){
+    earlyBias = `⚡ ${trap.signal} — ${trap.warning}`;
+    earlyBiasClass = "yes";
+  } else if(trap.cls === "no" && trap.tier > 0){
+    earlyBias = `⚡ ${trap.signal} — ${trap.warning}`;
+    earlyBiasClass = "no";
+  }
+
+  return {
+    trap,
+    earlyBias, earlyBiasClass,
+    bearTrapBounce, bullTrapPullback,
+    // expose for render
+    trapSignal:  trap.signal,
+    trapCls:     trap.cls,
+    trapWarning: trap.warning,
+    trapDetail:  trap.detail,
+    trapConflict:trap.conflict,
+    bullScore, bearScore,
+    strongCushionYes: strongCushYes,
+    strongCushionNo:  strongCushNo,
+    bullTrapPossible: t2BullPossible,
+    bearTrapPossible: t2BearPossible,
+    vwapOverride: {
+      signal:  vwapSignal,
+      action:  vwapAction,
+      cls:     vwapCls,
+      boost:   vwapBoost,
+      reason:  vwapReason,
+      cushion: price - target,
+      weakCushion, veryStrong
+    }
+  };
+}
+
 function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr,
                    p5, p10, p15, latestAvg, aggrMode }){
 
@@ -573,6 +952,15 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   const avgDistance      = Math.abs(avgCushion);
   const targetMagnetZone = avgDistance < cushionThreshold * 1.1;
 
+  // Declare cushionSignal early (needs avgCushion) — refined after score tally
+  // Initial value based on cushion only; yesScore/noScore gate added after tally
+  let cushionSignal = targetMagnetZone ? "MAGNET ZONE" :
+                      avgCushion >  cushionThreshold * 1.25 ? "CUSHION: YES SIDE" :
+                      avgCushion < -cushionThreshold * 1.25 ? "CUSHION: NO SIDE" :
+                      "MAGNET ZONE";
+  let cushionCls    = cushionSignal === "CUSHION: YES SIDE" ? "yes" :
+                      cushionSignal === "CUSHION: NO SIDE"  ? "no"  : "warn";
+
   // ── Score system ─────────────────────────────────────────────
   let yes=0.50, confidence=50;
   const reasons=[], warnings=[];
@@ -652,9 +1040,9 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   const no = 1 - yes;
   confidence = Math.max(0, Math.min(100, Math.round(confidence)));
 
-  // ── Indicator score tally ────────────────────────────────────
+  // ── Indicator score tally ────────────────────────────────────────────────
+  // Must run before detectTraps() — cushionSignal depends on yesScore/noScore
   let yesScore=0, noScore=0;
-  // Each vote: { label, side: "yes"|"no"|"neutral", key: bool (is this a key indicator?) }
   const votes = [];
 
   function vote(label, condition, key=false){
@@ -663,7 +1051,6 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     else                       {             votes.push({label,side:"neutral",key}); }
   }
 
-  // ★ = key indicator (directly references target price — most reliable)
   vote("Price vs Target",      price>target ? true : false,                                   true);
   vote("Candle Avg vs Target", latestAvg>target ? true : false,                               true);
   vote("Projected vs Target",  projectedAvg>target ? true : false,                            true);
@@ -673,22 +1060,63 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   vote("Candle Color",         latestCandleGreen?true:latestCandleRed?false:null,             false);
   vote("RSI",                  (rsi>52&&rsi<70)?true:(rsi<48&&rsi>30)?false:null,             false);
   vote("MACD",                 macdBullish===true?true:macdBullish===false?false:null,        false);
-  // Volume: follows whichever side is leading after above 9 votes
-  const vsLabel = volumeSpike?(yesScore>noScore?"yes":"no"):"neutral";
   if(volumeSpike){ if(yesScore>noScore){yesScore++;votes.push({label:"Volume Spike",side:"yes",key:false});}
-                   else {noScore++;votes.push({label:"Volume Spike",side:"no",key:false});} }
-  else { votes.push({label:"Volume",side:"neutral",key:false}); }
+                   else{noScore++;votes.push({label:"Volume Spike",side:"no",key:false});} }
+  else{ votes.push({label:"Volume",side:"neutral",key:false}); }
   const maxScore=10;
 
-  // ── Flip risk (ATR-based) ────────────────────────────────────
-  const safeVol = Math.max(atr, vol, 0.0001);
+  // ── Flip risk ─────────────────────────────────────────────────────────────
+  const safeVol      = Math.max(atr, vol, 0.0001);
   const flipRiskRatio = avgDistance / safeVol;
   const flipRiskLabel = flipRiskRatio>=3?"LOW":flipRiskRatio>=2?"MEDIUM":flipRiskRatio>=1.2?"HIGH":"VERY HIGH";
 
-  // ── Cushion signal ───────────────────────────────────────────
-  let cushionSignal="MAGNET ZONE", cushionCls="warn";
-  if(avgCushion>=cushionThreshold*1.25&&yesScore>=6){ cushionSignal="CUSHION: YES SIDE"; cushionCls="yes"; }
-  else if(avgCushion<=-cushionThreshold*1.25&&noScore>=6){ cushionSignal="CUSHION: NO SIDE"; cushionCls="no"; }
+  // ── Cushion signal refinement (now yesScore/noScore available) ──────────────
+  // Re-evaluate with score gate — overrides the early approximation
+  if(avgCushion >= cushionThreshold*1.25 && yesScore >= 6){ cushionSignal="CUSHION: YES SIDE"; cushionCls="yes"; }
+  else if(avgCushion <= -cushionThreshold*1.25 && noScore >= 6){ cushionSignal="CUSHION: NO SIDE"; cushionCls="no"; }
+  else { cushionSignal="MAGNET ZONE"; cushionCls="warn"; }
+
+  // ── Cushion plain-English reason ───────────────────────────────────────────
+  let cushionReason = "";
+  if(cushionSignal === "CUSHION: YES SIDE")
+    cushionReason = "Projected avg has safe gap above target. Indicators support YES.";
+  else if(cushionSignal === "CUSHION: NO SIDE")
+    cushionReason = "Projected avg has safe gap below target. Indicators support NO.";
+  else
+    cushionReason = "Projected avg too close to target — one candle can flip result.";
+
+  // ── UNIFIED TRAP ENGINE (single call, all 3 tiers) ─────────────────────────
+  // Must run AFTER yes/no/confidence are finalized so trap gets accurate probabilities
+  const trapResult = detectTraps({
+    price, target, projectedAvg, latestAvg,
+    vwap, trend5, trend10,
+    rsi, macdBullish, ema9, ema21,
+    latestCandleGreen, latestCandleRed, volumeSpike,
+    vol, atr,
+    avgCushion, avgDistance, cushionSignal, targetMagnetZone,
+    yes, no, timeLeft
+  });
+
+  // Apply trap probability + confidence adjustments
+  if(trapResult.trap.yesDelta !== 0){
+    yes = Math.max(0.05, Math.min(0.95, yes + trapResult.trap.yesDelta));
+    if(trapResult.trap.action.includes("YES") || trapResult.trap.action.includes("NO"))
+      reasons.push(`${trapResult.trap.tier===1?"VWAP":trapResult.trap.tier===2?"Projection":"RSI"} trap: ${trapResult.trap.signal}`);
+  }
+  if(trapResult.trap.confBoost !== 0)
+    confidence = Math.max(0, Math.min(100, Math.round(confidence + trapResult.trap.confBoost)));
+  if(trapResult.trap.signal !== "NONE" && (trapResult.trap.action === "WATCH" || trapResult.trap.tier === 3))
+    warnings.push(trapResult.trap.signal + ": " + trapResult.trap.warning);
+
+  // Destructure all trap fields — NOW safe to use everywhere below
+  const { earlyBias, earlyBiasClass, bearTrapBounce, bullTrapPullback,
+          trapSignal, trapCls, trapWarning, trapDetail, trapConflict,
+          bullScore, bearScore, strongCushionYes, strongCushionNo,
+          bullTrapPossible, bearTrapPossible, vwapOverride } = trapResult;
+
+  // [score tally moved above]
+
+
 
   // ── RSI label ────────────────────────────────────────────────
   let rsiLabel="NEUTRAL", rsiCls="muted";
@@ -812,142 +1240,7 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     }
   }
 
-  // ── Bull Trap / Bear Trap ────────────────────────────────────
-  // ── Bull Trap / Bear Trap ─────────────────────────────────────────────────
-  //
-  // DEFINITION:
-  //   Bull Trap = price crossed ABOVE target but the move is FAKE.
-  //               The projected settlement avg is still BELOW target (or barely above).
-  //               Price will likely fall back and settle below target → BET NO.
-  //
-  //   Bear Trap = price crossed BELOW target but the drop is FAKE.
-  //               The projected settlement avg is still ABOVE target (or barely below).
-  //               Price will likely recover and settle above target → BET YES.
-  //
-  // CRITICAL RULE: A trap CANNOT fire if the projected avg has a STRONG cushion
-  //   on the same side as price. If price is $230 above target AND projected avg
-  //   is $230 above target, that is a GENUINE YES setup — NOT a bull trap.
-  //   A trap only makes sense when projected avg contradicts the live price direction.
-  //
-  // MANDATORY gate: projBelow or projBarelyA MUST be true for bull trap to fire.
-  //                 projAbove or projBarelyB MUST be true for bear trap to fire.
-
-  let trapSignal="NONE", trapCls="muted", trapWarning="", trapDetail="", trapConflict="";
-
-  const priceAbove  = price > target;
-  const priceBelow  = price < target;
-  const projBelow   = projectedAvg < target;
-  const projAbove   = projectedAvg > target;
-
-  // "Barely above/below" = projected avg is on the right side but cushion is thin
-  // Threshold: less than 1.0× ATR of cushion (was 0.8× cushionThreshold which was too generous)
-  // "Barely" threshold: projected avg is on the right side but VERY close to target.
-  // Tightened from 1.0 ATR to 0.4 ATR — a $2 cushion on a $107 ATR coin is NOT
-  // "barely above", it's inside noise. Only flag when cushion < 0.4 ATR.
-  const projBarelyA = projectedAvg > target && (projectedAvg - target) < atr * 0.4;
-  const projBarelyB = projectedAvg < target && (target - projectedAvg) < atr * 0.4;
-
-  // Strong cushion = projected avg has clear separation from target (>= 1.5 ATR)
-  const strongCushionYes = projectedAvg > target && (projectedAvg - target) >= atr * 1.5;
-  const strongCushionNo  = projectedAvg < target && (target - projectedAvg) >= atr * 1.5;
-
-  // MANDATORY GATE 1: structural — trap direction must match projection conflict
-  const bullTrapPossible = priceAbove && (projBelow || projBarelyA) && !strongCushionYes;
-  const bearTrapPossible = priceBelow && (projAbove || projBarelyB) && !strongCushionNo;
-
-  // MANDATORY GATE 2: minimum cushion for actionable trap
-  // If projected avg is within 1.5 ATR of target, the outcome is too uncertain to BET.
-  // This catches Case 2: $2 cushion on $107 ATR — trap score 7 but cushion 0.02x ATR.
-  const trapCushionEnough = avgDistance >= atr * 1.5;
-
-  // MANDATORY GATE 3: magnet zone = never actionable regardless of trap
-  const trapBlockedByMagnet = targetMagnetZone;
-
-  const t5Rev      = trend5 < 0 && trend10 > 0;   // 5m turned bearish, 10m still bullish
-  const t5Rec      = trend5 > 0 && trend10 < 0;   // 5m turned bullish, 10m still bearish
-  const t5Weaker   = trend5 < trend10;
-  const t5Stronger = trend5 > trend10;
-  const rsiOB      = rsi >= 70;   // raised from 68 — only truly overbought
-  const rsiOS      = rsi <= 30;   // only truly oversold
-  const macdBearDiv = macdBullish === false && priceAbove;
-  const macdBullDiv = macdBullish === true  && priceBelow;
-
-  // weakPush: only counts when the push JUST barely crossed target (within 0.5 ATR)
-  // A $230 push above target is NOT weak — it's a real move
-  const justAboveTarget = priceAbove && (price - target) < atr * 0.5;
-  const justBelowTarget = priceBelow && (target - price) < atr * 0.5;
-  const weakPush = !volumeSpike && latestCandleGreen && justAboveTarget;
-  const weakDrop = !volumeSpike && latestCandleRed   && justBelowTarget;
-
-  const narrowEMAup = ema9 > ema21 && (ema9 - ema21) < atr * 0.4;
-  const narrowEMAdn = ema9 < ema21 && (ema21 - ema9) < atr * 0.4;
-
-  // Score — only computed when trap is structurally possible
-  // projBelow/projAbove worth 3 points (strong structural signal)
-  // projBarelyA/B worth 1 point (weak — projection barely contradicts price)
-  // Without projBelow or projBarelyA the bullScore stays 0 (gate above ensures this)
-  const bullScore = !bullTrapPossible ? 0 :
-    (priceAbove?1:0) + (projBelow?3:projBarelyA?1:0) +
-    (t5Rev?2:t5Weaker?1:0) + (rsiOB?2:0) + (macdBearDiv?2:0) +
-    (weakPush?1:0) + (narrowEMAup?1:0);
-
-  const bearScore = !bearTrapPossible ? 0 :
-    (priceBelow?1:0) + (projAbove?3:projBarelyB?1:0) +
-    (t5Rec?2:t5Stronger?1:0) + (rsiOS?2:0) + (macdBullDiv?2:0) +
-    (weakDrop?1:0) + (narrowEMAdn?1:0);
-
-  // Conflict resolution: when cushion and trap signals contradict each other,
-  // the projected avg is the tiebreaker (it's our best settlement estimate).
-  // Cushion YES + projected above target → cushion wins, trap overridden
-  // Cushion NO  + projected below target → cushion wins, trap overridden
-  const cushionWinsOverTrap =
-    (avgCushion > 0 && projAbove && cushionSignal.includes("YES")) ||
-    (avgCushion < 0 && projBelow && cushionSignal.includes("NO"));
-
-  if(bullScore >= 6 && !cushionWinsOverTrap && trapCushionEnough && !trapBlockedByMagnet){
-    trapSignal  = "⚠ BULL TRAP DETECTED"; trapCls = "no";
-    trapWarning = "RTI price above target but projected settlement is BELOW or barely above — FAKE BREAKOUT → BET NO";
-    trapDetail  = [
-      projBelow     ? "Projected avg BELOW target despite RTI being above" : "",
-      projBarelyA   ? `Projected avg only $${(projectedAvg-target).toFixed(1)} above target — within 1 ATR ($${atr.toFixed(0)})` : "",
-      t5Rev         ? "5m trend REVERSED bearish while 10m still positive" : "",
-      rsiOB         ? `RSI ${rsi.toFixed(0)} — overbought` : "",
-      macdBearDiv   ? "MACD histogram bearish while RTI above target" : "",
-      weakPush      ? `Price only $${(price-target).toFixed(1)} above target with no volume` : "",
-    ].filter(Boolean).join(" · ");
-    warnings.push("⚠ BULL TRAP — projected settlement contradicts live price");
-  } else if(bullScore >= 6 && cushionWinsOverTrap){
-    // Trap would fire but cushion contradicts it — show a conflict notice instead
-    trapSignal  = "⚡ RSI/MACD CAUTION (NOT a trap — cushion confirms YES)";
-    trapCls     = "warn";
-    trapWarning = `RSI ${rsi.toFixed(0)} overbought + MACD bearish, BUT projected avg is $${(projectedAvg-target).toFixed(1)} above target. Cushion overrides trap. Watch for pullback but settlement looks YES.`;
-    trapDetail  = `Bull trap score ${bullScore}/11 — blocked because projected avg has strong YES cushion. RSI/MACD are lagging indicators; projected settlement avg is the primary signal.`;
-    trapConflict= "CUSHION WINS";
-  } else if(bullScore >= 4 && priceAbove && !strongCushionYes){
-    trapSignal  = "👀 BULL TRAP WATCH"; trapCls = "warn";
-    const blocked = trapBlockedByMagnet ? " · MAGNET ZONE — skip anyway" : (!trapCushionEnough ? ` · Cushion only ${avgDistance.toFixed(1)} vs need ${(atr*1.5).toFixed(1)} (1.5 ATR) — too small to act` : "");
-    trapWarning = `Price above target but reversal signals present${blocked}. Watch only — NOT a bet.`;
-    trapDetail  = `Score ${bullScore}/11 — not strong enough. Needs projected avg below target to confirm.`;
-  }
-
-  if(bearScore >= 6 && trapSignal === "NONE" && !cushionWinsOverTrap && trapCushionEnough && !trapBlockedByMagnet){
-    trapSignal  = "⚠ BEAR TRAP DETECTED"; trapCls = "yes";
-    trapWarning = "RTI price below target but projected settlement is ABOVE or barely below — FAKE BREAKDOWN → BET YES";
-    trapDetail  = [
-      projAbove   ? "Projected avg ABOVE target despite RTI being below" : "",
-      projBarelyB ? `Projected avg only $${(target-projectedAvg).toFixed(1)} below target — within 1 ATR ($${atr.toFixed(0)})` : "",
-      t5Rec       ? "5m trend RECOVERED bullish while 10m still negative" : "",
-      rsiOS       ? `RSI ${rsi.toFixed(0)} — oversold` : "",
-      macdBullDiv ? "MACD histogram bullish while RTI below target" : "",
-      weakDrop    ? `Price only $${(target-price).toFixed(1)} below target with no volume` : "",
-    ].filter(Boolean).join(" · ");
-    warnings.push("⚠ BEAR TRAP — projected settlement contradicts live price");
-  } else if(bearScore >= 4 && priceBelow && trapSignal === "NONE" && !strongCushionNo){
-    trapSignal  = "👀 BEAR TRAP WATCH"; trapCls = "warn";
-    const blocked = trapBlockedByMagnet ? " · MAGNET ZONE — skip anyway" : (!trapCushionEnough ? ` · Cushion only ${avgDistance.toFixed(1)} vs need ${(atr*1.5).toFixed(1)} (1.5 ATR) — too small to act` : "");
-    trapWarning = `Price below target but recovery signals present${blocked}. Watch only — NOT a bet.`;
-    trapDetail  = `Score ${bearScore}/11 — mild. Needs projected avg above target to confirm.`;
-  }
+  // [trap moved above]
 
   return {
     yes, no, confidence,
@@ -958,7 +1251,8 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     volatilityPct, volatilityHigh, volatilityVeryHigh,
     latestAvg, projectedAvg, roll15avg,
     cushionThreshold, avgCushion, avgDistance,
-    cushionSignal, cushionCls, targetMagnetZone,
+    cushionSignal, cushionCls, cushionReason, targetMagnetZone,
+    earlyBias, earlyBiasClass, bearTrapBounce, bullTrapPullback,
     timeLeft, ema9, ema21, vwap,
     volumeSpike, avgVol, latestVolume:latest.volume,
     latestCandleGreen, latestCandleRed, strongCandle,
@@ -970,6 +1264,7 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     p5, p10, p15,
     coreYes, coreNo,
     tooEarly, earlyWin, idealWin, lateWin, tooLate,
+    vwapOverride,
     trapSignal, trapCls, trapWarning, trapDetail, trapConflict, bullScore, bearScore,
     strongCushionYes, strongCushionNo, bullTrapPossible, bearTrapPossible,
     trendConsensus, momentumNudge, urgency
@@ -1023,15 +1318,16 @@ async function runOnce(){
     $("result").innerHTML=`<div class="card"><span class="spin">⟳</span> Fetching blended RTI data from Coinbase, Kraken & Bitstamp…</div>`;
 
   try{
-    // Fetch candles and blended RTI price in parallel
-    const [candles1m, rtiData] = await Promise.all([
+    // Fetch candles, RTI price AND Kalshi live bid/ask simultaneously
+    const [candles1m, rtiData, kalshiLive] = await Promise.all([
       getCandles(product, 60),
-      getBlendedRTI(product)
+      getBlendedRTI(product),
+      fetchKalshiLivePrices(product)   // ← fresh YES/NO market prices every analyze
     ]);
 
     if(candles1m.length<20) throw new Error("Not enough candle data");
 
-    const price   = rtiData.blended;   // ← USE BLENDED RTI, not single exchange
+    const price   = rtiData.blended;
     const closes  = candles1m.slice(-30).map(c=>c.close);
     const rsi     = RSI(closes);
     const vol     = VOL(closes);
@@ -1042,11 +1338,68 @@ async function runOnce(){
     const latest  = candles1m[candles1m.length-1];
     const latestAvg = ohlc4(latest);
 
-    const r = analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr,
-                        p5, p10, p15, latestAvg, aggrMode });
+    // Use fresh Kalshi market probability as marketInput if available
+    // ── Kalshi market input guard ────────────────────────────────────────────
+    // v39 only blended market probability when the user MANUALLY typed it.
+    // Auto-filling from Kalshi is only safe when the market is LIQUID and RELIABLE:
+    //
+    // ACCEPT Kalshi mid-price when ALL of these are true:
+    //   1. Spread ≤ 5 cents  → market is liquid, mid-price is meaningful
+    //   2. Mid-price 5%–95%  → not a nearly-settled contract (stale price risk)
+    //   3. User has NOT manually entered a value → respect manual override
+    //
+    // REJECT (use pure technical probability) when:
+    //   - Spread > 5 cents   → wide spread = illiquid = mid-price unreliable
+    //   - Mid < 5% or > 95% → contract near settlement, price is stale
+    //   - User typed a value → always respect manual input
+
+    let effectiveMarketInput = marketInput; // default: use whatever user typed (or NaN)
+    let kalshiMarketStatus   = "not used";
+    let kalshiMarketNote     = "";
+
+    const userTypedMarket = !isNaN(marketInput) && marketInput >= 0 && marketInput <= 1;
+
+    if(kalshiLive && kalshiLive.yesBid != null && kalshiLive.yesAsk != null){
+      const klMid    = (kalshiLive.yesBid + kalshiLive.yesAsk) / 2;
+      const klSpread = kalshiLive.yesAsk - kalshiLive.yesBid;  // in 0-1 units
+
+      // Spread check: ≤ 0.05 = 5 cents = liquid
+      const spreadOkKl  = klSpread <= 0.05;
+      // Mid-price check: must be between 5% and 95%
+      const midOk        = klMid >= 0.05 && klMid <= 0.95;
+      // User override check
+      const noUserInput  = !userTypedMarket;
+
+      if(spreadOkKl && midOk && noUserInput){
+        // All conditions met — safe to use Kalshi mid as market input
+        effectiveMarketInput = klMid;
+        kalshiMarketStatus   = "accepted";
+        kalshiMarketNote     = `Spread ${(klSpread*100).toFixed(1)}¢ ✓ · Mid ${(klMid*100).toFixed(1)}% ✓ · Auto-filled`;
+        // Update the field so user can see what was used
+        const mktEl = $("market");
+        if(mktEl) mktEl.value = klMid.toFixed(2);
+      } else {
+        // Rejected — explain why
+        const reasons = [];
+        if(!spreadOkKl) reasons.push(`Spread ${(klSpread*100).toFixed(1)}¢ > 5¢ (illiquid)`);
+        if(!midOk)      reasons.push(`Mid ${(klMid*100).toFixed(1)}% outside 5–95% (near-settled)`);
+        if(userTypedMarket) reasons.push("User manual input used instead");
+        kalshiMarketStatus = "rejected";
+        kalshiMarketNote   = reasons.join(" · ");
+        // Keep effectiveMarketInput = marketInput (user value or NaN = pure technical)
+      }
+      // Store on kalshiLive for display in renderResult
+      kalshiLive._marketStatus = kalshiMarketStatus;
+      kalshiLive._marketNote   = kalshiMarketNote;
+      kalshiLive._klMid        = klMid;
+      kalshiLive._klSpread     = klSpread;
+    }
+
+    const r = analyze({ product, price, target, marketInput: effectiveMarketInput,
+                        candles1m, rsi, vol, atr, p5, p10, p15, latestAvg, aggrMode });
 
     lastRefreshTime = new Date();
-    renderResult(r, rtiData, product, price, target, rsi, vol);
+    renderResult(r, rtiData, kalshiLive, product, price, target, rsi, vol);
 
   } catch(e){
     console.error(e);
@@ -1060,7 +1413,7 @@ async function runOnce(){
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
-function renderResult(r, rti, product, price, target, rsi, vol){
+function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
   const macdText  = r.macdBullish===true?"▲ Bullish":r.macdBullish===false?"▼ Bearish":"—";
   const macdCls   = r.macdBullish===true?"yes":r.macdBullish===false?"no":"muted";
   const spreadOk  = rti.maxSpread <= price*0.002;
@@ -1102,6 +1455,69 @@ function renderResult(r, rti, product, price, target, rsi, vol){
     ? `<div style="font-size:11px;color:var(--muted);margin-top:8px;">Updated ${lastRefreshTime.toLocaleTimeString()} ${isAuto?"· auto "+$("refreshRate").value+"s":""}</div>`
     : "";
 
+  // Build VWAP override HTML before innerHTML (avoid nested backtick)
+  const vo = r.vwapOverride;
+  let vwapOverrideHtml = "";
+  if(vo.signal !== "NO SPECIAL VWAP OVERRIDE"){
+    const voBg   = vo.cls==="yes"?"#052e16":vo.cls==="no"?"#450a0a":"#1c1400";
+    const voFc   = vo.cls==="yes"?"var(--yes)":vo.cls==="no"?"var(--no)":"var(--warn)";
+    const voBdr  = vo.cls==="yes"?"var(--yes)":vo.cls==="no"?"var(--no)":"var(--warn)";
+    const voIcon = vo.cls==="yes"?"🐻⚡ BEAR TRAP":vo.cls==="no"?"🐂⚡ BULL TRAP":"⚠️";
+    vwapOverrideHtml = `<div style="background:${voBg};border:1.5px solid ${voBdr};border-radius:7px;padding:6px 9px;margin-bottom:5px;">
+      <div style="font-size:12px;font-weight:800;color:${voFc};margin-bottom:3px;">${voIcon} ${vo.signal}</div>
+      <div style="font-size:10px;font-weight:700;color:${voFc};margin-bottom:2px;">Action: ${vo.action}</div>
+      <div style="font-size:9.5px;color:var(--muted);line-height:1.4;">${vo.reason}</div>
+      <div style="font-size:9px;color:var(--muted);margin-top:3px;">
+        Cushion: ${vo.cushion.toFixed(2)} · ${vo.weakCushion?"⚠ Weak cushion":"✓ Strong cushion"} · Conf boost: ${vo.boost>0?"+":""}${vo.boost}
+      </div>
+    </div>`;
+  }
+
+  // Build Kalshi live HTML before innerHTML (can't nest backtick templates)
+  let kalshiHtml = "";
+  if(!kalshiLive || (kalshiLive.yesBid==null && kalshiLive.yesAsk==null)){
+    kalshiHtml = `<div style="font-size:9px;color:var(--muted);background:var(--card);border:1px solid var(--border);border-radius:6px;padding:3px 8px;margin-bottom:5px;">Kalshi prices unavailable · using market input ${(r.marketYes*100).toFixed(0)}%</div>`;
+  } else {
+    const klYesBid = kalshiLive.yesBid  != null ? (kalshiLive.yesBid  * 100).toFixed(0) : "—";
+    const klYesAsk = kalshiLive.yesAsk  != null ? (kalshiLive.yesAsk  * 100).toFixed(0) : "—";
+    const klNoBid  = kalshiLive.yesBid  != null ? (100 - kalshiLive.yesBid  * 100).toFixed(0) : "—";
+    const klNoAsk  = kalshiLive.yesAsk  != null ? (100 - kalshiLive.yesAsk  * 100).toFixed(0) : "—";
+    const klYesMid = (kalshiLive.yesBid != null && kalshiLive.yesAsk != null)
+                     ? ((kalshiLive.yesBid + kalshiLive.yesAsk) / 2 * 100).toFixed(1)
+                     : klYesBid;
+    const klNoMid  = (100 - parseFloat(klYesMid)).toFixed(1);
+    const klClose  = kalshiLive.closeTime
+                     ? new Date(kalshiLive.closeTime).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}) : "—";
+    const klYesCol = parseFloat(klYesMid) >= 50 ? "var(--yes)" : "var(--muted)";
+    const klNoCol  = parseFloat(klNoMid)  >= 50 ? "var(--no)"  : "var(--muted)";
+    const klTicker = kalshiLive.ticker ? kalshiLive.ticker.split("-").slice(-2).join("-") : "—";
+    kalshiHtml = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px;">
+        <div style="background:#052e16;border:1px solid var(--yes);border-radius:6px;padding:4px 7px;text-align:center;">
+          <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;">Kalshi YES</div>
+          <div style="font-size:19px;font-weight:800;color:${klYesCol};line-height:1.1;">${klYesMid}%</div>
+          <div style="font-size:8px;color:var(--muted);">bid ${klYesBid}¢ · ask ${klYesAsk}¢</div>
+        </div>
+        <div style="background:#450a0a;border:1px solid var(--no);border-radius:6px;padding:4px 7px;text-align:center;">
+          <div style="font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;">Kalshi NO</div>
+          <div style="font-size:19px;font-weight:800;color:${klNoCol};line-height:1.1;">${klNoMid}%</div>
+          <div style="font-size:8px;color:var(--muted);">bid ${klNoBid}¢ · ask ${klNoAsk}¢</div>
+        </div>
+      </div>
+      <div style="font-size:8px;color:var(--muted);margin-bottom:2px;display:flex;justify-content:space-between;">
+        <span>Live Kalshi · ${klTicker} · closes ${klClose} · via ${kalshiLive.proxyUsed||"proxy"}</span>
+      </div>
+      <div style="font-size:8px;padding:2px 5px;border-radius:3px;margin-bottom:4px;
+        background:${kalshiLive._marketStatus==="accepted"?"#052e16":"#1c1400"};
+        color:${kalshiLive._marketStatus==="accepted"?"var(--yes)":"var(--warn)"};">
+        Market input: ${kalshiLive._marketStatus==="accepted"
+          ? "✓ Using Kalshi mid "+((kalshiLive._klMid||0)*100).toFixed(1)+"% · "+kalshiLive._marketNote
+          : kalshiLive._marketStatus==="rejected"
+            ? "⚠ Kalshi rejected — pure technical used · "+kalshiLive._marketNote
+            : "Not evaluated"}
+      </div>`;
+  }
+
   $("result").innerHTML = `
   <div>
     ${cushionBanner}${lateBanner}
@@ -1124,6 +1540,9 @@ function renderResult(r, rti, product, price, target, rsi, vol){
         <div style="font-size:9px;color:var(--muted);margin-top:1px;">${r.signalReason}</div>
       </div>
     </div>
+
+    <!-- KALSHI LIVE MARKET PRICES -->
+    ${kalshiHtml}
 
     <!-- ROW 2: YES/NO compact with inline vote tags -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:4px;">
@@ -1173,7 +1592,18 @@ function renderResult(r, rti, product, price, target, rsi, vol){
         : `<span class="chip chip-yes">✓ No Trap</span>`}
       ${r.cushionSignal==="CUSHION: YES SIDE"?`<span class="chip chip-yes">✅ Cushion YES</span>`
         :r.cushionSignal==="CUSHION: NO SIDE"?`<span class="chip chip-no">🔴 Cushion NO</span>`:""}
+      ${r.vwapOverride.cls==="yes"?`<span class="chip chip-yes" style="font-weight:800;">🐻⚡ BEAR TRAP ↓</span>`:
+        r.vwapOverride.cls==="no"?`<span class="chip chip-no" style="font-weight:800;">🐂⚡ BULL TRAP ↓</span>`:
+        r.vwapOverride.signal!=="NO SPECIAL VWAP OVERRIDE"?`<span class="chip chip-warn">⚠ VWAP ↓</span>`:""}
+      ${r.bearTrapBounce?`<span class="chip chip-yes" style="font-weight:800;">🔄 BOUNCE/BEAR TRAP</span>`:""}
+      ${r.bullTrapPullback?`<span class="chip chip-no" style="font-weight:800;">🔄 PULLBACK/BULL TRAP</span>`:""}
     </div>
+
+    <!-- EARLY BIAS banner (shown even when > 7 min) -->
+    ${r.earlyBias ? `
+    <div class="banner banner-${r.earlyBiasClass}" style="margin-bottom:5px;font-size:11px;">
+      ${r.earlyBiasClass==="yes"?"📈":r.earlyBiasClass==="no"?"📉":"⚡"} ${r.earlyBias}
+    </div>` : ""}
 
     <!-- ROW 3: Price data + Indicators in 2-col card grid -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;">
@@ -1187,6 +1617,7 @@ function renderResult(r, rti, product, price, target, rsi, vol){
         <div class="drow"><span class="lbl">Cushion</span><span class="val ${r.avgCushion>0?"yes":"no"}">${r.avgCushion>0?"+":""}${r.avgCushion.toFixed(1)}</span></div>
         <div class="drow"><span class="lbl">ATR×</span><span class="val muted">${(Math.abs(r.avgCushion)/r.atr).toFixed(2)}x</span></div>
         <div class="drow"><span class="lbl">Zone</span><span class="val ${r.targetMagnetZone?"warn":"yes"}">${r.targetMagnetZone?"⚠ Close":"✓ OK"}</span></div>
+        <div style="font-size:8.5px;color:var(--muted);padding:2px 0;line-height:1.3;">${r.cushionReason}</div>
         <div class="drow"><span class="lbl">ATR</span><span class="val muted">${r.atr.toFixed(1)}</span></div>
       </div>
 
@@ -1209,6 +1640,16 @@ function renderResult(r, rti, product, price, target, rsi, vol){
       <div class="sec" style="margin-top:0;">Trap Detector</div>
       ${trapHtml}
     </div>
+
+    <!-- VWAP OVERRIDE BOX -->
+    ${(()=>{
+      const vo = r.vwapOverride;
+      if(vo.signal === "NO SPECIAL VWAP OVERRIDE") return "";
+      const bc = vo.cls==="yes"?"#052e16":vo.cls==="no"?"#450a0a":"#1c1400";
+      const fc = vo.cls==="yes"?"var(--yes)":vo.cls==="no"?"var(--no)":"var(--warn)";
+      const icon = vo.cls==="yes"?"🐻⚡":vo.cls==="no"?"🐂⚡":"⚠️";
+      return vwapOverrideHtml;
+    })()}
 
     <!-- SCALP (only if active) -->
     ${r.scalpSignal!=="NO SCALP SETUP"?`
@@ -1341,15 +1782,33 @@ async function loadKalshiTarget(product){
   }
 }
 
-// ── Analyze with target refresh ──────────────────────────────────────────────
-// When Analyze is clicked: re-fetch Kalshi target in background (non-blocking),
-// then immediately run the analysis with whatever target is in the field.
+// ── Fetch ONLY the live bid/ask prices from Kalshi (fast, lightweight) ────────
+// Called on every Analyze click / auto-refresh to get fresh YES/NO market prices.
+// Reuses the same CORS proxy race as the full target fetch.
+async function fetchKalshiLivePrices(product){
+  const series = KALSHI_SERIES_MAP[product];
+  if(!series) return null;
+  try {
+    // Reuse the full proxy race — it already returns bid/ask
+    const result = await fetchKalshiTargetViaCorsProxy(product);
+    if(!result) return null;
+    // If target field is empty, also fill it in
+    const inp = $("target");
+    if(!inp.value && result.target > 0){
+      inp.value = result.target.toFixed(4);
+      inp.style.borderColor = "var(--yes)";
+      window._kalshiResult = result;
+    }
+    return result;
+  } catch(e){ return null; }
+}
+
+// ── Analyze with LIVE Kalshi prices ─────────────────────────────────────────
+// Fetches fresh bid/ask from Kalshi in parallel with price+candle data,
+// so the result always shows the latest market probabilities.
 async function analyzeWithRefresh(){
   const product = $("coin").value;
-  // Fire refresh in background — don't await, so Analyze runs instantly
-  loadKalshiTarget(product).catch(()=>{});
-  // Run analysis immediately with current target value
-  runOnce();
+  runOnce(); // run immediately with current target
 }
 
 // ── Kalshi Bet Placement ──────────────────────────────────────────────────────
