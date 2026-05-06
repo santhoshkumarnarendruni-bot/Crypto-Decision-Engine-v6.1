@@ -2035,12 +2035,20 @@ async function loadKalshiTarget(product){
 
     badge.style.cssText = "font-size:10px;font-family:'JetBrains Mono',monospace;"+
       "margin-top:3px;padding:4px 9px;border-radius:5px;border:1px solid var(--warn);"+
-      "background:#1a1200;color:var(--warn);line-height:1.5;";
+      "background:#1a1200;color:var(--warn);line-height:1.6;display:flex;justify-content:space-between;align-items:center;";
 
     const series = KALSHI_SERIES_MAP[product];
     badge.innerHTML = series
-      ? `⚠ Kalshi fetch failed — enter target manually · <a href="https://www.coinbase.com/predictions" target="_blank" style="color:var(--info)">Open Coinbase Predictions</a>`
-      : `⚠ No Kalshi 15-min market for ${product} — enter target manually`;
+      ? `<span>⚠ Kalshi fetch failed — enter manually or retry</span>
+         <span style="display:flex;gap:6px;align-items:center;">
+           <span onclick="loadKalshiTarget('${product}')"
+             style="cursor:pointer;padding:2px 8px;border-radius:4px;border:1px solid var(--warn);
+                    color:var(--warn);font-weight:700;font-size:10px;background:#2a1800;"
+             title="Retry Kalshi fetch">⟳ Retry</span>
+           <a href="https://www.coinbase.com/predictions" target="_blank"
+             style="color:var(--info);font-size:10px;">Open Coinbase</a>
+         </span>`
+      : `<span>⚠ No Kalshi 15-min market for ${product} — enter target manually</span>`;
   }
 }
 
@@ -2473,174 +2481,472 @@ async function runOptions1h(){
     // Suggested budget
     const suggestedBudget = strengthPct >= 80 ? 20 : strengthPct >= 60 ? 10 : 5;
 
-    // ── Render 1-hour options signal ─────────────────────────────────────────
-    r1h.innerHTML = `
-    <div>
-      <!-- DIRECTION SIGNAL -->
-      <div class="card" style="background:${dirBg};border:2px solid ${dirColor};padding:8px 10px;margin-bottom:5px;">
-        <div style="font-size:20px;font-weight:800;color:${dirColor};line-height:1;">${direction}</div>
-        <div style="font-size:9px;color:var(--muted);margin-top:2px;">
-          1-hour direction signal · ${strength} (${strengthPct}%)
+    // ── Straddle calculations ────────────────────────────────────────────────
+    // STRADDLE = buy CALL + buy PUT at same strike, profit if BTC moves enough
+    const strikeAtm       = Math.round(price / 50) * 50; // at-the-money
+    const premCallAtm     = blackScholesPrice(price, strikeAtm, T, rfRate, sigma, "call");
+    const premPutAtm      = blackScholesPrice(price, strikeAtm, T, rfRate, sigma, "put");
+    const straddleTotalCost = premCallAtm + premPutAtm;
+    const straddleBreakUp   = strikeAtm + straddleTotalCost;
+    const straddleBreakDn   = strikeAtm - straddleTotalCost;
+
+    // ATR-based straddle viability check
+    // Rule: ATR × 4 should be > straddle cost for it to be worth entering
+    const atrX4           = atr1h * 4;
+    const straddleViable  = atrX4 > straddleTotalCost;
+    const straddleMargin  = atrX4 - straddleTotalCost; // how much buffer above breakeven
+    const straddleScore   = [
+      straddleViable,                         // ATR rule
+      (dvol !== null && dvol < 50),           // IV not too high
+      (strengthPct >= 60),                    // strong momentum = big move likely
+      (Math.abs(trend60m) > straddleTotalCost), // 60m range > cost
+    ].filter(Boolean).length; // 0-4 score
+
+    let straddleVerdict = "", straddleVColor = "", straddleVBg = "";
+    if(straddleScore === 4){
+      straddleVerdict = "✅ GREAT DAY FOR STRADDLE";
+      straddleVColor  = "var(--yes)"; straddleVBg = "#052e16";
+    } else if(straddleScore === 3){
+      straddleVerdict = "⚡ GOOD — conditions mostly met";
+      straddleVColor  = "var(--info)"; straddleVBg = "#0c2a4a";
+    } else if(straddleScore === 2){
+      straddleVerdict = "⚠ BORDERLINE — enter small";
+      straddleVColor  = "var(--warn)"; straddleVBg = "#1c1400";
+    } else {
+      straddleVerdict = "❌ QUIET DAY — skip straddle";
+      straddleVColor  = "var(--no)"; straddleVBg = "#200010";
+    }
+
+    // ── Single-side CALL / PUT success analysis ────────────────────────────────
+    // Success rate estimation based on:
+    //   1. How far strike is from current price vs expected move (ATR-based probability)
+    //   2. Signal strength (bull/bear score)
+    //   3. IV level (higher IV = market expects bigger move)
+    //   4. Number of indicators confirming direction
+
+    function singleSideAnalysis(sideType, strikePrice, premium, currentPrice, move1x, bull, bear, total, dv){
+      // Probability BTC reaches strike = based on normal distribution of expected move
+      // P(move > distance) = 1 - CDF(distance / hourlyMove)
+      const dist   = Math.abs(strikePrice - currentPrice);
+      const zScore = dist / (move1x * 0.5); // normalized distance
+      // Simplified normal CDF approximation
+      const probReach = Math.max(0.02, Math.min(0.98, 1 - (0.5 * (1 + erf(zScore / Math.SQRT2)))));
+
+      // Signal alignment bonus: strong signal in same direction as option
+      const signalScore = sideType === "call" ? bull/total : bear/total;
+      const signalBonus = (signalScore - 0.5) * 0.3; // ±15% bonus/penalty
+
+      // IV adjustment: higher IV means market expects bigger move (better for options buyer)
+      const ivBonus = dv ? Math.min(0.10, Math.max(-0.10, (50 - dv) / 200)) : 0;
+
+      const finalProb = Math.max(0.05, Math.min(0.90, probReach + signalBonus + ivBonus));
+
+      // Expected value = (prob × payout) - ((1-prob) × premium)
+      const payout = Math.max(0, (sideType === "call" ? currentPrice + move1x : currentPrice - move1x) - strikePrice);
+      const ev     = (finalProb * payout) - ((1 - finalProb) * premium);
+      const roi    = premium > 0 ? ((payout - premium) / premium * 100) : 0;
+
+      let guidance = "", guidanceColor = "";
+      if(finalProb >= 0.65 && signalScore >= 0.7){
+        guidance = "Strong — signal + probability aligned. Good single-leg bet.";
+        guidanceColor = "var(--yes)";
+      } else if(finalProb >= 0.50 && signalScore >= 0.6){
+        guidance = "Moderate — decent chance, signal confirms. Reasonable bet.";
+        guidanceColor = "var(--info)";
+      } else if(finalProb >= 0.40){
+        guidance = "Weak — low probability of reaching strike. Use straddle instead.";
+        guidanceColor = "var(--warn)";
+      } else {
+        guidance = "Poor — strike too far, signal weak. Skip this side.";
+        guidanceColor = "var(--no)";
+      }
+
+      return { prob: finalProb, payout, ev, roi, guidance, guidanceColor, signalScore };
+    }
+
+    // Analyse both CALL and PUT for conservative strike (closest, highest prob)
+    const callAnalysis = singleSideAnalysis("call", strikeConservative, premConserv,
+      price, hourlyMove, bullScore, bearScore, totalWeight, dvol);
+    const putAnalysis  = singleSideAnalysis("put",  strikeConservative,
+      blackScholesPrice(price, strikeConservative, T, rfRate, sigma, "put"),
+      price, hourlyMove, bullScore, bearScore, totalWeight, dvol);
+    const putPremConserv = blackScholesPrice(price, strikeConservative, T, rfRate, sigma, "put");
+
+    // Which single side is better right now?
+    const betterSide   = callAnalysis.prob > putAnalysis.prob ? "CALL" : "PUT";
+    const betterProb   = Math.max(callAnalysis.prob, putAnalysis.prob);
+    const betterPrem   = betterSide === "CALL" ? premConserv : putPremConserv;
+    const betterStrike = strikeConservative;
+    const betterColor  = betterSide === "CALL" ? "var(--yes)" : "var(--no)";
+    const betterBg     = betterSide === "CALL" ? "#052e16" : "#450a0a";
+    const betterAnalysis = betterSide === "CALL" ? callAnalysis : putAnalysis;
+
+    // Straddle payout scenarios
+    function straddlePnL(btcFinal, strike, callPrem, putPrem){
+      const totalCost = callPrem + putPrem;
+      const callVal   = Math.max(0, btcFinal - strike);
+      const putVal    = Math.max(0, strike  - btcFinal);
+      const bestLeg   = Math.max(callVal, putVal);
+      return { profit: bestLeg - totalCost, totalCost, callVal, putVal };
+    }
+    const s1x = straddlePnL(price + hourlyMove,   strikeAtm, premCallAtm, premPutAtm);
+    const s1d = straddlePnL(price - hourlyMove,   strikeAtm, premCallAtm, premPutAtm);
+    const s2x = straddlePnL(price + hourlyMove*2, strikeAtm, premCallAtm, premPutAtm);
+    const s2d = straddlePnL(price - hourlyMove*2, strikeAtm, premCallAtm, premPutAtm);
+    const sFlat = straddlePnL(price,              strikeAtm, premCallAtm, premPutAtm);
+
+    // Budget options: how many straddles can you buy with $20/$50/$100
+    function straddlesFor(budget){
+      const n = Math.floor(budget / straddleTotalCost);
+      return { n, cost: +(n * straddleTotalCost).toFixed(2), callQty: n, putQty: n };
+    }
+    const b20  = straddlesFor(20);
+    const b50  = straddlesFor(50);
+    const b100 = straddlesFor(100);
+
+    // ── Render ─────────────────────────────────────────────────────────────────
+    r1h.innerHTML = `<div>
+
+    <!-- ① STRADDLE VERDICT — big, simple, first thing you see -->
+    <div style="background:${straddleVBg};border:2px solid ${straddleVColor};
+      border-radius:8px;padding:10px 12px;margin-bottom:6px;text-align:center;">
+      <div style="font-size:15px;font-weight:800;color:${straddleVColor};margin-bottom:4px;">
+        ${straddleVerdict}
+      </div>
+      <div style="font-size:10px;color:var(--muted);">
+        Score ${straddleScore}/4 conditions met
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px;text-align:left;">
+        <div style="font-size:9px;color:${straddleViable?"var(--yes)":"var(--no)"};">
+          ${straddleViable?"✓":"✗"} ATR×4 ($${atrX4.toFixed(0)}) > cost ($${straddleTotalCost.toFixed(0)})
         </div>
-        <div style="display:flex;gap:5px;margin-top:5px;flex-wrap:wrap;">
-          <span class="chip chip-${direction==='CALL'?'yes':direction==='PUT'?'no':'muted'}">
-            ${direction==='CALL'?'▲ CALL':'▼ PUT'} ${strength}
-          </span>
-          <span class="chip chip-muted">Bull ${bullPct}%</span>
-          <span class="chip chip-muted">Bear ${bearPct}%</span>
-          <span class="chip" style="background:#0c2a4a;color:${ivColor};border:1px solid ${ivColor};">
-            IV: ${dvol ? dvol.toFixed(0)+"%" : "—"}
-          </span>
+        <div style="font-size:9px;color:${(dvol!==null&&dvol<50)?"var(--yes)":"var(--no)"};">
+          ${(dvol!==null&&dvol<50)?"✓":"✗"} IV below 50% ${dvol?("("+dvol.toFixed(0)+"%)"):("(unavail)")}
+        </div>
+        <div style="font-size:9px;color:${strengthPct>=60?"var(--yes)":"var(--no)"};">
+          ${strengthPct>=60?"✓":"✗"} Signal strong (${strengthPct}%)
+        </div>
+        <div style="font-size:9px;color:${Math.abs(trend60m)>straddleTotalCost?"var(--yes)":"var(--no)"};">
+          ${Math.abs(trend60m)>straddleTotalCost?"✓":"✗"} 60m range $${Math.abs(trend60m).toFixed(0)} > cost
         </div>
       </div>
+    </div>
 
-      <!-- IV STATUS -->
-      <div class="card" style="padding:6px 9px;margin-bottom:5px;border:1px solid ${ivColor};">
-        <div class="sec" style="margin-top:0;">📊 Implied Volatility (DVOL)</div>
-        <div style="font-size:12px;font-weight:700;color:${ivColor};">${ivStatus}</div>
-        <div style="font-size:9px;color:var(--muted);margin-top:2px;">${ivNote}${dvol ? " · DVOL: "+dvol.toFixed(1)+"%" : ""}</div>
-        <div style="font-size:8.5px;color:var(--muted);margin-top:2px;">
-          Rule: DVOL &lt;40 = buy options cheap · 40–60 = normal · &gt;60 = expensive · &gt;80 = avoid
-        </div>
+    <!-- ② SINGLE-SIDE CALL vs PUT GUIDANCE -->
+    <div class="card" style="padding:8px 10px;margin-bottom:6px;">
+      <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:5px;letter-spacing:.04em;">
+        🎯 SINGLE SIDE — CALL or PUT only?
+      </div>
+      <div style="font-size:8.5px;color:var(--muted);margin-bottom:5px;">
+        If you want to bet ONE direction only (cheaper, higher return if right):
       </div>
 
-      <!-- 5-INDICATOR CHECKLIST -->
-      <div class="card" style="padding:6px 9px;margin-bottom:5px;">
-        <div class="sec" style="margin-top:0;">✅ 1-Hour Signal Checklist</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px;">
-          ${Object.entries(checks).map(([k,c])=>{
-            const state = c.bull?"BULL":c.bear?"BEAR":"NEUTRAL";
-            const col   = c.bull?"var(--yes)":c.bear?"var(--no)":"var(--muted)";
-            const icon  = c.bull?"▲":c.bear?"▼":"—";
-            return `<div style="font-size:9.5px;padding:2px 0;border-bottom:1px solid #1a1a1a;display:flex;justify-content:space-between;">
-              <span style="color:var(--muted);">${c.label}</span>
-              <span style="color:${col};font-weight:700;">${icon} ${state}</span>
-            </div>`;
-          }).join("")}
-        </div>
-        <div style="font-size:8px;color:var(--muted);margin-top:4px;">
-          Trend data: 5m ${trend5m>=0?"+":""}${trend5m.toFixed(0)} · 
-          15m ${trend15m>=0?"+":""}${trend15m.toFixed(0)} · 
-          30m ${trend30m>=0?"+":""}${trend30m.toFixed(0)} · 
-          60m ${trend60m>=0?"+":""}${trend60m.toFixed(0)}
-        </div>
+      <!-- Market favorite -->
+      <div style="background:${betterBg};border:2px solid ${betterColor};border-radius:7px;
+        padding:7px 10px;margin-bottom:5px;text-align:center;">
+        <div style="font-size:9px;color:var(--muted);margin-bottom:2px;">Market + Signal Favor</div>
+        <div style="font-size:20px;font-weight:800;color:${betterColor};">${betterSide}</div>
+        <div style="font-size:13px;font-weight:700;color:${betterColor};">${(betterProb*100).toFixed(0)}% success estimate</div>
+        <div style="font-size:8.5px;color:var(--muted);margin-top:2px;">${betterAnalysis.guidance}</div>
       </div>
 
-      <!-- STRIKE CALCULATOR -->
-      <div class="card" style="padding:6px 9px;margin-bottom:5px;">
-        <div class="sec" style="margin-top:0;">🎯 Strike Price Calculator</div>
-        <div style="font-size:8.5px;color:var(--muted);margin-bottom:5px;">
-          BTC @ $${price.toFixed(0)} · Est. 1-hour move: ±$${hourlyMove.toFixed(0)} · 
-          1× target: $${targetPrice1x.toFixed(0)}
-        </div>
+      <!-- Side by side comparison -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:5px;">
 
-        <!-- Strike comparison table -->
-        <div style="font-size:9px;font-weight:700;color:var(--muted);margin-bottom:3px;text-transform:uppercase;">
-          Estimated premiums (Black-Scholes, indicative only)
-        </div>
-        ${[
-          {label:"Conservative", strike: strikeConservative, prem: premConserv, rec: strength==="STRONG"},
-          {label:"Balanced",     strike: strikeBalanced,     prem: premBal,     rec: strength==="MODERATE"},
-          {label:"Aggressive",   strike: strikeAggressive,   prem: premAgg,     rec: false},
-        ].map(s=>{
-          const p1 = optionPayoutAtPrice(targetPrice1x, s.strike, s.prem, type);
-          const dist = Math.abs(price - s.strike);
-          const distPct = (dist/price*100).toFixed(2);
-          return `<div style="background:${s.rec?"#0a1e10":"#111"};border:1px solid ${s.rec?"var(--yes)":"var(--border)"};
-            border-radius:5px;padding:4px 7px;margin-bottom:3px;">
-            <div style="display:flex;justify-content:space-between;align-items:baseline;">
-              <span style="font-size:10px;font-weight:700;color:${s.rec?"var(--yes)":"var(--text)"}">
-                ${s.rec?"★ ":""}${s.label}
+        <!-- CALL card -->
+        <div style="background:${direction==='CALL'?'#052e16':'#111'};
+          border:1.5px solid ${direction==='CALL'?'var(--yes)':'var(--border)'};
+          border-radius:6px;padding:6px 8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+            <span style="font-size:11px;font-weight:800;color:var(--yes);">▲ CALL</span>
+            ${direction==='CALL'?`<span style="font-size:8px;background:#064e1a;color:var(--yes);
+              padding:1px 5px;border-radius:10px;border:1px solid var(--yes);">Signal favors</span>`:''}
+          </div>
+          <div style="font-size:9px;color:var(--muted);">Strike: <b style="color:var(--text);">$${strikeConservative.toLocaleString()}</b></div>
+          <div style="font-size:9px;color:var(--muted);">Premium: <b style="color:var(--warn);">~$${premConserv.toFixed(0)}</b></div>
+          <div style="font-size:9px;color:var(--muted);">BTC needs: <b style="color:var(--yes);">above $${strikeConservative.toLocaleString()}</b></div>
+
+          <!-- Success bar -->
+          <div style="margin-top:4px;">
+            <div style="display:flex;justify-content:space-between;font-size:8px;color:var(--muted);margin-bottom:1px;">
+              <span>Success estimate</span>
+              <span style="color:${callAnalysis.prob>=0.6?'var(--yes)':callAnalysis.prob>=0.45?'var(--warn)':'var(--no)'};">
+                ${(callAnalysis.prob*100).toFixed(0)}%
               </span>
-              <span style="font-size:9px;color:var(--muted);">${distPct}% from current</span>
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;margin-top:3px;">
-              <div>
-                <div style="font-size:8px;color:var(--muted);">Strike</div>
-                <div style="font-size:11px;font-weight:700;">$${s.strike.toLocaleString()}</div>
-              </div>
-              <div>
-                <div style="font-size:8px;color:var(--muted);">Est. premium</div>
-                <div style="font-size:11px;font-weight:700;color:var(--warn);">$${s.prem.toFixed(0)}</div>
-              </div>
-              <div>
-                <div style="font-size:8px;color:var(--muted);">If 1× move</div>
-                <div style="font-size:11px;font-weight:700;color:${p1.profit>0?"var(--yes)":"var(--no)"};">
-                  ${p1.profit>0?"+":""}$${p1.profit.toFixed(0)}
-                </div>
-              </div>
+            <div style="height:4px;background:#222;border-radius:2px;overflow:hidden;">
+              <div style="height:100%;width:${(callAnalysis.prob*100).toFixed(0)}%;
+                background:${callAnalysis.prob>=0.6?'var(--yes)':callAnalysis.prob>=0.45?'var(--warn)':'var(--no)'};
+                border-radius:2px;"></div>
             </div>
+          </div>
+
+          <div style="font-size:8px;color:${callAnalysis.guidanceColor};margin-top:3px;line-height:1.3;">
+            ${callAnalysis.guidance}
+          </div>
+
+          <!-- Payout if win -->
+          <div style="margin-top:3px;padding:3px 5px;background:#0a0a0a;border-radius:4px;">
+            <div style="font-size:8px;color:var(--muted);">$20 bet → ${Math.floor(20/premConserv)} contracts</div>
+            <div style="font-size:10px;font-weight:700;color:var(--yes);">
+              Win: +$${(Math.floor(20/premConserv)*callAnalysis.payout - 20).toFixed(0)}
+            </div>
+            <div style="font-size:8px;color:var(--no);">Lose: -$${Math.min(20, Math.floor(20/premConserv)*premConserv).toFixed(0)}</div>
+          </div>
+        </div>
+
+        <!-- PUT card -->
+        <div style="background:${direction==='PUT'?'#450a0a':'#111'};
+          border:1.5px solid ${direction==='PUT'?'var(--no)':'var(--border)'};
+          border-radius:6px;padding:6px 8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+            <span style="font-size:11px;font-weight:800;color:var(--no);">▼ PUT</span>
+            ${direction==='PUT'?`<span style="font-size:8px;background:#6b0d0d;color:var(--no);
+              padding:1px 5px;border-radius:10px;border:1px solid var(--no);">Signal favors</span>`:''}
+          </div>
+          <div style="font-size:9px;color:var(--muted);">Strike: <b style="color:var(--text);">$${strikeConservative.toLocaleString()}</b></div>
+          <div style="font-size:9px;color:var(--muted);">Premium: <b style="color:var(--warn);">~$${putPremConserv.toFixed(0)}</b></div>
+          <div style="font-size:9px;color:var(--muted);">BTC needs: <b style="color:var(--no);">below $${strikeConservative.toLocaleString()}</b></div>
+
+          <!-- Success bar -->
+          <div style="margin-top:4px;">
+            <div style="display:flex;justify-content:space-between;font-size:8px;color:var(--muted);margin-bottom:1px;">
+              <span>Success estimate</span>
+              <span style="color:${putAnalysis.prob>=0.6?'var(--yes)':putAnalysis.prob>=0.45?'var(--warn)':'var(--no)'};">
+                ${(putAnalysis.prob*100).toFixed(0)}%
+              </span>
+            </div>
+            <div style="height:4px;background:#222;border-radius:2px;overflow:hidden;">
+              <div style="height:100%;width:${(putAnalysis.prob*100).toFixed(0)}%;
+                background:${putAnalysis.prob>=0.6?'var(--yes)':putAnalysis.prob>=0.45?'var(--warn)':'var(--no)'};
+                border-radius:2px;"></div>
+            </div>
+          </div>
+
+          <div style="font-size:8px;color:${putAnalysis.guidanceColor};margin-top:3px;line-height:1.3;">
+            ${putAnalysis.guidance}
+          </div>
+
+          <!-- Payout if win -->
+          <div style="margin-top:3px;padding:3px 5px;background:#0a0a0a;border-radius:4px;">
+            <div style="font-size:8px;color:var(--muted);">$20 bet → ${Math.floor(20/putPremConserv)} contracts</div>
+            <div style="font-size:10px;font-weight:700;color:var(--yes);">
+              Win: +$${(Math.floor(20/putPremConserv)*putAnalysis.payout - 20).toFixed(0)}
+            </div>
+            <div style="font-size:8px;color:var(--no);">Lose: -$${Math.min(20, Math.floor(20/putPremConserv)*putPremConserv).toFixed(0)}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Decision helper -->
+      <div style="padding:5px 8px;background:#111;border-radius:5px;border:1px solid var(--border);
+        font-size:8.5px;line-height:1.6;">
+        <b style="color:var(--info);">How to choose:</b><br>
+        <span style="color:var(--yes);">▲ CALL</span> — buy when signal is BULL + price above VWAP + trend rising<br>
+        <span style="color:var(--no);">▼ PUT</span> — buy when signal is BEAR + price below VWAP + trend falling<br>
+        <span style="color:var(--warn);">★ Straddle</span> — buy when signal is strong but direction unclear OR big move expected<br>
+        <span style="color:var(--muted);">Success % = probability of BTC reaching strike in 1 hour (indicative, not guaranteed)</span>
+      </div>
+    </div>
+
+    <!-- ③ WHAT TO BUY — clear instructions -->
+    <div class="card" style="padding:8px 10px;margin-bottom:6px;">
+      <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:6px;letter-spacing:.04em;">
+        📋 WHAT TO BUY (Straddle)
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px;">
+        <!-- CALL leg -->
+        <div style="background:#052e16;border:1px solid var(--yes);border-radius:6px;padding:6px 8px;">
+          <div style="font-size:9px;color:var(--muted);margin-bottom:2px;text-transform:uppercase;">Buy CALL (if goes UP)</div>
+          <div style="font-size:14px;font-weight:800;color:var(--yes);">$${strikeAtm.toLocaleString()}</div>
+          <div style="font-size:8.5px;color:var(--muted);">Strike price</div>
+          <div style="font-size:13px;font-weight:700;color:var(--warn);margin-top:3px;">~$${premCallAtm.toFixed(0)}</div>
+          <div style="font-size:8.5px;color:var(--muted);">Est. premium per contract</div>
+        </div>
+        <!-- PUT leg -->
+        <div style="background:#450a0a;border:1px solid var(--no);border-radius:6px;padding:6px 8px;">
+          <div style="font-size:9px;color:var(--muted);margin-bottom:2px;text-transform:uppercase;">Buy PUT (if goes DOWN)</div>
+          <div style="font-size:14px;font-weight:800;color:var(--no);">$${strikeAtm.toLocaleString()}</div>
+          <div style="font-size:8.5px;color:var(--muted);">Strike price</div>
+          <div style="font-size:13px;font-weight:700;color:var(--warn);margin-top:3px;">~$${premPutAtm.toFixed(0)}</div>
+          <div style="font-size:8.5px;color:var(--muted);">Est. premium per contract</div>
+        </div>
+      </div>
+      <div style="background:#111;border-radius:5px;padding:5px 8px;font-size:9px;line-height:1.7;">
+        <div style="color:var(--muted);">Total cost per straddle: <b style="color:var(--warn);">~$${straddleTotalCost.toFixed(0)}</b></div>
+        <div style="color:var(--yes);">Break even UP:   BTC above <b>$${straddleBreakUp.toFixed(0)}</b> (+$${straddleTotalCost.toFixed(0)})</div>
+        <div style="color:var(--no);">Break even DOWN: BTC below <b>$${straddleBreakDn.toFixed(0)}</b> (-$${straddleTotalCost.toFixed(0)})</div>
+        <div style="color:var(--muted);">Max loss: <b>$${straddleTotalCost.toFixed(0)}</b> (if BTC barely moves)</div>
+      </div>
+    </div>
+
+    <!-- ③ HOW MUCH TO INVEST — budget options -->
+    <div class="card" style="padding:8px 10px;margin-bottom:6px;">
+      <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:5px;letter-spacing:.04em;">
+        💰 HOW MUCH TO INVEST
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;">
+        ${[b20,b50,b100].map((b,i)=>{
+          const budgets=[20,50,100];
+          const rec = i===0;
+          return `<div style="background:${rec?"#0a1e10":"#111"};border:1px solid ${rec?"var(--yes)":"var(--border)"};
+            border-radius:5px;padding:5px 7px;text-align:center;">
+            <div style="font-size:11px;font-weight:800;color:${rec?"var(--yes)":"var(--text)"};">$${budgets[i]}</div>
+            ${b.n>0?`
+            <div style="font-size:8.5px;color:var(--muted);">${b.n} straddle${b.n>1?"s":""}</div>
+            <div style="font-size:8px;color:var(--muted);">${b.n} CALL + ${b.n} PUT</div>
+            <div style="font-size:8px;color:var(--warn);">cost $${b.cost}</div>
+            `:`<div style="font-size:8px;color:var(--no);">Not enough<br>need $${straddleTotalCost.toFixed(0)}</div>`}
           </div>`;
         }).join("")}
       </div>
-
-      <!-- RECOMMENDED TRADE -->
-      <div class="card" style="padding:6px 9px;margin-bottom:5px;background:${dirBg};border:1.5px solid ${dirColor};">
-        <div class="sec" style="margin-top:0;color:${dirColor};">💰 Recommended Trade</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:5px;">
-          <div>
-            <div style="font-size:8px;color:var(--muted);">Suggested budget</div>
-            <div style="font-size:18px;font-weight:800;color:${dirColor};">$${suggestedBudget}</div>
-            <div style="font-size:8px;color:var(--muted);">${strengthPct}% strength → $${suggestedBudget}</div>
-          </div>
-          <div>
-            <div style="font-size:8px;color:var(--muted);">Strike (${strength==="STRONG"?"Conservative":"Balanced"})</div>
-            <div style="font-size:18px;font-weight:800;">$${recStrike.toLocaleString()}</div>
-            <div style="font-size:8px;color:var(--muted);">Est. premium ~$${recPremium.toFixed(0)}</div>
-          </div>
-        </div>
-        <div style="background:#0a0a0a;border-radius:5px;padding:5px 7px;margin-bottom:4px;">
-          <div style="font-size:8.5px;color:var(--muted);margin-bottom:3px;">If BTC moves to $${targetPrice1x.toFixed(0)} (1× ATR):</div>
-          <div style="font-size:12px;font-weight:700;color:${recPayout1x.profit>0?"var(--yes)":"var(--no)"};">
-            Option worth $${recPayout1x.payout.toFixed(0)} · profit ${recPayout1x.profit>0?"+":""}$${recPayout1x.profit.toFixed(0)} (${recPayout1x.roi.toFixed(0)}% ROI)
-          </div>
-          <div style="font-size:8.5px;color:var(--muted);margin-top:2px;">If BTC moves to $${targetPrice2x.toFixed(0)} (2× ATR):
-            <span style="color:${recPayout2x.profit>0?"var(--yes)":"var(--muted)"};">
-              profit ${recPayout2x.profit>0?"+":""}$${recPayout2x.profit.toFixed(0)} (${recPayout2x.roi.toFixed(0)}% ROI)
-            </span>
-          </div>
-        </div>
-        <div style="font-size:8.5px;line-height:1.5;color:var(--muted);">
-          <b style="color:var(--warn);">⚡ Exit rule:</b> Sell when option value hits 2× your premium paid. 
-          Stop loss: sell if option loses 50% of value.<br>
-          Never hold to expiry unless signal stays strong at 45-min mark.
-        </div>
+      <div style="font-size:8.5px;color:var(--muted);margin-top:4px;">
+        ★ Start with $20 (1 straddle) while learning. Scale up only after 3+ profitable trades.
       </div>
+    </div>
 
-      <!-- PLATFORM GUIDE -->
-      <div class="card" style="padding:6px 9px;margin-bottom:5px;">
-        <div class="sec" style="margin-top:0;">🏦 Where to Trade</div>
-        <div style="font-size:9.5px;color:var(--warn);margin-bottom:4px;font-weight:700;">
-          ⚠ Coinbase does NOT offer BTC options. Use one of these:
-        </div>
+    <!-- ④ WHAT YOU GET — profit scenarios -->
+    <div class="card" style="padding:8px 10px;margin-bottom:6px;">
+      <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:5px;letter-spacing:.04em;">
+        📊 WHAT YOU GET (per 1 straddle = $${straddleTotalCost.toFixed(0)})
+      </div>
+      <div style="font-size:9px;color:var(--muted);margin-bottom:4px;">
+        Est. 1-hour move: ±$${hourlyMove.toFixed(0)} &nbsp;·&nbsp; Current ATR: $${atr1h.toFixed(0)}
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:9.5px;">
+        <tr style="color:var(--muted);font-size:8.5px;">
+          <th style="text-align:left;padding:3px 0;border-bottom:1px solid #222;">Scenario</th>
+          <th style="text-align:right;padding:3px 0;border-bottom:1px solid #222;">BTC price</th>
+          <th style="text-align:right;padding:3px 0;border-bottom:1px solid #222;">Which leg wins</th>
+          <th style="text-align:right;padding:3px 0;border-bottom:1px solid #222;">Profit/Loss</th>
+        </tr>
+        <tr>
+          <td style="padding:3px 0;border-bottom:1px solid #1a1a1a;">Flat (no move)</td>
+          <td style="text-align:right;color:var(--muted);">$${price.toFixed(0)}</td>
+          <td style="text-align:right;color:var(--muted);">Neither</td>
+          <td style="text-align:right;color:var(--no);font-weight:700;">-$${straddleTotalCost.toFixed(0)}</td>
+        </tr>
+        <tr>
+          <td style="padding:3px 0;border-bottom:1px solid #1a1a1a;">UP 1× ($${hourlyMove.toFixed(0)})</td>
+          <td style="text-align:right;color:var(--yes);">$${(price+hourlyMove).toFixed(0)}</td>
+          <td style="text-align:right;color:var(--yes);">CALL</td>
+          <td style="text-align:right;color:${s1x.profit>0?"var(--yes)":"var(--no)"};font-weight:700;">
+            ${s1x.profit>=0?"+":""}$${s1x.profit.toFixed(0)}
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:3px 0;border-bottom:1px solid #1a1a1a;">DOWN 1× ($${hourlyMove.toFixed(0)})</td>
+          <td style="text-align:right;color:var(--no);">$${(price-hourlyMove).toFixed(0)}</td>
+          <td style="text-align:right;color:var(--no);">PUT</td>
+          <td style="text-align:right;color:${s1d.profit>0?"var(--yes)":"var(--no)"};font-weight:700;">
+            ${s1d.profit>=0?"+":""}$${s1d.profit.toFixed(0)}
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:3px 0;border-bottom:1px solid #1a1a1a;">UP 2× ($${(hourlyMove*2).toFixed(0)})</td>
+          <td style="text-align:right;color:var(--yes);">$${(price+hourlyMove*2).toFixed(0)}</td>
+          <td style="text-align:right;color:var(--yes);">CALL</td>
+          <td style="text-align:right;color:var(--yes);font-weight:700;">+$${s2x.profit.toFixed(0)}</td>
+        </tr>
+        <tr>
+          <td style="padding:3px 0;">DOWN 2× ($${(hourlyMove*2).toFixed(0)})</td>
+          <td style="text-align:right;color:var(--no);">$${(price-hourlyMove*2).toFixed(0)}</td>
+          <td style="text-align:right;color:var(--no);">PUT</td>
+          <td style="text-align:right;color:var(--yes);font-weight:700;">+$${s2d.profit.toFixed(0)}</td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- ⑤ EXIT RULES — when to sell -->
+    <div class="card" style="padding:8px 10px;margin-bottom:6px;border:1px solid var(--warn);">
+      <div style="font-size:10px;font-weight:700;color:var(--warn);margin-bottom:5px;letter-spacing:.04em;">
+        ⚡ WHEN TO SELL (Exit Rules)
+      </div>
+      <div style="font-size:9.5px;line-height:1.8;">
+        <div style="color:var(--yes);">✓ <b>Take profit:</b> Sell the winning leg when it's worth 2× premium paid</div>
+        <div style="color:var(--yes);">✓ <b>CALL target:</b> BTC reaches $${(strikeAtm + premCallAtm*2).toFixed(0)} → sell CALL</div>
+        <div style="color:var(--yes);">✓ <b>PUT target:</b> BTC reaches $${(strikeAtm - premPutAtm*2).toFixed(0)} → sell PUT</div>
+        <div style="color:var(--no);">✗ <b>Stop loss:</b> Sell BOTH if total value drops to 30% of cost</div>
+        <div style="color:var(--no);">✗ <b>45-min rule:</b> Exit both legs at 45 min regardless</div>
+        <div style="color:var(--muted);">— <b>Never hold to expiry</b> — time decay kills value in last 15 min</div>
+      </div>
+    </div>
+
+    <!-- ⑥ AUTOMATION — can this be automated? -->
+    <div class="card" style="padding:8px 10px;margin-bottom:6px;">
+      <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:5px;letter-spacing:.04em;">
+        🤖 CAN THIS BE AUTOMATED?
+      </div>
+      <div style="font-size:9.5px;line-height:1.8;color:var(--text);">
+        <b style="color:var(--yes);">Yes — partially.</b> Here's what can and cannot be automated:
+      </div>
+      <div style="margin-top:5px;">
         ${[
-          {name:"Bybit",    url:"bybit.com",   note:"Easiest UI for beginners · Good mobile app · 1h expiry available",      rec:true},
-          {name:"OKX",      url:"okx.com",     note:"Simple interface · Good for small amounts · Mobile app",                  rec:true},
-          {name:"Deribit",  url:"deribit.com", note:"Most liquid · Best for accurate prices · More complex UI",               rec:false},
-        ].map(p=>`
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #1a1a1a;">
-            <div>
-              <span style="font-size:10px;font-weight:700;color:${p.rec?"var(--info)":"var(--text)"};">${p.rec?"★ ":""}${p.name}</span>
-              <div style="font-size:8px;color:var(--muted);">${p.note}</div>
-            </div>
-            <span style="font-size:8px;color:var(--muted);">${p.url}</span>
+          {icon:"✅",label:"Auto-detect straddle signal",note:"Already done — this tab shows it",can:true},
+          {icon:"✅",label:"Auto place CALL + PUT on Bybit",note:"Bybit has API — can be scripted",can:true},
+          {icon:"✅",label:"Auto set take-profit orders",note:"Bybit supports TP/SL on options",can:true},
+          {icon:"✅",label:"Auto set stop-loss orders",note:"Bybit supports conditional orders",can:true},
+          {icon:"⚠️",label:"Auto exit at 45-min mark",note:"Needs a timer + API call — possible",can:true},
+          {icon:"❌",label:"Fully hands-free on Bybit",note:"Bybit API requires server (not browser HTML)",can:false},
+          {icon:"❌",label:"Automate from this HTML file",note:"Browser cannot hold open TCP connection 24/7",can:false},
+        ].map(r=>`
+          <div style="display:flex;gap:6px;align-items:baseline;padding:2px 0;border-bottom:1px solid #1a1a1a;font-size:9px;">
+            <span>${r.icon}</span>
+            <span style="flex:1;color:${r.can?"var(--text)":"var(--muted)"};">${r.label}</span>
+            <span style="color:var(--muted);font-size:8px;">${r.note}</span>
           </div>`).join("")}
-        <div style="font-size:8px;color:var(--muted);margin-top:4px;border-top:1px solid #1a1a1a;padding-top:4px;">
-          On Coinbase: use <b style="color:var(--info)">Perpetual Futures (Advanced Trade)</b> for leveraged BTC direction bets instead.
-          Nano BTC = 0.01 BTC per contract. Similar to options but no time decay.
+      </div>
+      <div style="margin-top:6px;padding:5px 8px;background:#0a1620;border-radius:5px;border:1px solid #1a3a6a;">
+        <div style="font-size:9px;font-weight:700;color:var(--info);margin-bottom:3px;">How to automate properly:</div>
+        <div style="font-size:8.5px;color:var(--muted);line-height:1.6;">
+          1. Use <b style="color:var(--info);">Bybit API</b> (free, no cost) — generate key in Bybit settings<br>
+          2. Run a simple <b style="color:var(--info);">Python script</b> on your computer (or free cloud server)<br>
+          3. Script watches this tool's signal → when STRADDLE score = 4 → places both legs<br>
+          4. Sets TP at 2× premium and SL at 30% loss automatically<br>
+          5. Timer cancels both at 45 min<br>
+          <b style="color:var(--warn);">Want me to generate the Python script for you?</b> It would be ~50 lines.
         </div>
       </div>
+    </div>
 
-      <div style="font-size:8.5px;color:var(--muted);padding:0 0 8px;line-height:1.5;">
-        ⚠ Estimated premiums from Black-Scholes are INDICATIVE only. Actual market prices may differ.
-        Always check live premium on your chosen platform before trading.<br>
-        Rule: Only buy options when strength ≥ 60% AND DVOL &lt; 60.
+    <!-- ⑦ WHERE TO TRADE -->
+    <div class="card" style="padding:8px 10px;margin-bottom:6px;">
+      <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:4px;letter-spacing:.04em;">
+        🏦 WHERE TO TRADE
       </div>
+      <div style="font-size:9px;color:var(--warn);font-weight:700;margin-bottom:4px;">
+        ⚠ Coinbase does NOT offer BTC options.
+      </div>
+      ${[
+        {name:"★ Bybit",url:"bybit.com",note:"Best for beginners · Good mobile · Supports TP/SL on options",rec:true},
+        {name:"★ OKX", url:"okx.com",  note:"Simple mobile app · Good for small amounts",rec:true},
+        {name:"Deribit",url:"deribit.com",note:"Most liquid · Best prices · More complex",rec:false},
+      ].map(p=>`
+        <div style="display:flex;justify-content:space-between;align-items:center;
+          padding:4px 0;border-bottom:1px solid #1a1a1a;font-size:9.5px;">
+          <div>
+            <span style="font-weight:700;color:${p.rec?"var(--info)":"var(--text)"};">${p.name}</span>
+            <div style="font-size:8px;color:var(--muted);">${p.note}</div>
+          </div>
+          <span style="font-size:8px;color:var(--muted);">${p.url}</span>
+        </div>`).join("")}
+      <div style="font-size:8px;color:var(--muted);margin-top:4px;border-top:1px solid #1a1a1a;padding-top:3px;">
+        On Coinbase: use Perpetual Futures (Advanced Trade) for leveraged direction bets. No options available.
+      </div>
+    </div>
+
+    <div style="font-size:8.5px;color:var(--muted);padding:0 0 8px;line-height:1.5;">
+      ⚠ Premiums are Black-Scholes estimates — always check live price on Bybit/OKX before trading.<br>
+      Rule: Only straddle when score ≥ 3/4 AND DVOL &lt; 60 AND ATR &gt; $60.
+    </div>
     </div>`;
 
   } catch(e){
     console.error(e);
-    r1h.innerHTML = `<div class="card" style="color:var(--no)">Error: ${e.message}</div>`;
+    r1h.innerHTML = `<div class="card" style="color:var(--no)">Error loading 1h signal: ${e.message}<br>
+      <button onclick="runOptions1h()" style="margin-top:6px;padding:4px 10px;border-radius:4px;
+        border:1px solid var(--info);background:transparent;color:var(--info);cursor:pointer;">⟳ Retry</button>
+    </div>`;
   }
 }
 
