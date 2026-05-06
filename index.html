@@ -229,6 +229,29 @@
   </div>
 </div>
 
+<!-- Daily Loss Tracker -->
+<div id="lossTracker" style="display:flex;justify-content:space-between;align-items:center;
+  background:var(--card);border:1px solid var(--border);border-radius:7px;
+  padding:6px 10px;margin-bottom:6px;font-size:10px;font-family:monospace;">
+  <div>
+    <span style="color:var(--muted);font-size:9px;">Daily bets: </span>
+    <span id="lossW" style="color:var(--yes);font-weight:700;">0</span>
+    <span style="color:var(--muted);font-size:9px;"> wins / </span>
+    <span id="lossL" style="color:var(--no);font-weight:700;">0</span>
+    <span style="color:var(--muted);font-size:9px;"> losses</span>
+    <span style="margin-left:6px;" id="lossStatus"></span>
+  </div>
+  <div style="display:flex;gap:4px;align-items:center;">
+    <span style="font-size:8.5px;color:var(--muted);">Tap after each bet:</span>
+    <button onclick="recordResult('w')" style="padding:2px 8px;border-radius:4px;border:1px solid var(--yes);
+      background:transparent;color:var(--yes);cursor:pointer;font-size:10px;" title="I won that bet">✓ Win</button>
+    <button onclick="recordResult('l')" style="padding:2px 8px;border-radius:4px;border:1px solid var(--no);
+      background:transparent;color:var(--no);cursor:pointer;font-size:10px;" title="I lost that bet">✗ Loss</button>
+    <button onclick="resetTracker()" style="padding:2px 8px;border-radius:4px;border:1px solid var(--border);
+      background:transparent;color:var(--muted);cursor:pointer;font-size:10px;">Reset</button>
+  </div>
+</div>
+
 <div id="result15m"><div id="result"></div></div>
 <div id="result1h" style="display:none;"></div>
 
@@ -1180,22 +1203,28 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
 
   // ── Mode thresholds ─────────────────────────────────────────
   const thr = {
-    conservative:{ confMin:70, yesProb:0.68, scoreMin:8, cushionMult:1.5 },
-    balanced:    { confMin:63, yesProb:0.64, scoreMin:7, cushionMult:1.25 },
-    aggressive:  { confMin:55, yesProb:0.60, scoreMin:6, cushionMult:1.0  },
+    // cushionMult raised to 2.0 minimum across all modes — 1.5 was too low based on real losses
+    conservative:{ confMin:70, yesProb:0.68, scoreMin:8, cushionMult:2.0 },
+    balanced:    { confMin:63, yesProb:0.64, scoreMin:7, cushionMult:2.0 },
+    aggressive:  { confMin:55, yesProb:0.60, scoreMin:6, cushionMult:1.8 },
   }[aggrMode] || { confMin:63, yesProb:0.64, scoreMin:7, cushionMult:1.25 };
 
   // ── Time windows ─────────────────────────────────────────────
   const tooEarly = timeLeft > 10;
   const earlyWin = timeLeft > 6 && timeLeft <= 10;
-  const idealWin = timeLeft <= 6 && timeLeft >= 2.5;
-  const lateWin  = timeLeft >= 1 && timeLeft < 2.5;
-  const tooLate  = timeLeft < 1;
+  const idealWin = timeLeft <= 6 && timeLeft >= 4;   // HARD STOP at 4 min (was 2.5)
+  const lateWin  = false;                             // DISABLED — never bet under 4 min
+  const tooLate  = timeLeft < 4;                     // anything < 4 min = too late
 
   const cushionYes = avgCushion >=  cushionThreshold * thr.cushionMult;
   const cushionNo  = avgCushion <= -cushionThreshold * thr.cushionMult;
-  const coreYes = price>target && latestAvg>target && projectedAvg>target && price>vwap && ema9>ema21;
-  const coreNo  = price<target && latestAvg<target && projectedAvg<target && price<vwap && ema9<ema21;
+  // 3-star gate: all 3 key indicators must agree for any BET signal
+  // These are the only indicators that directly reference the settlement price
+  const threeStarsYes = price > target && latestAvg > target && projectedAvg > target;
+  const threeStarsNo  = price < target && latestAvg < target && projectedAvg < target;
+
+  const coreYes = threeStarsYes && price>vwap && ema9>ema21;
+  const coreNo  = threeStarsNo  && price<vwap && ema9<ema21;
   const confOk   = confidence >= thr.confMin;
   const probYes  = yes >= thr.yesProb;
   const probNo   = no  >= thr.yesProb;
@@ -1220,17 +1249,24 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     else if(eN){ rawDecision="BET NO"; entryTiming="EARLY — VERY STRONG"; signalReason="All NO factors align early with large cushion"; }
     else { rawDecision="WATCH ONLY"; entryTiming="FORMING — WAIT 6–3 MIN"; signalReason=coreYes?"YES forming, not strong enough yet":coreNo?"NO forming, not strong enough yet":"No clear direction yet"; }
   } else if(idealWin){
-    if(coreYes && cushionYes && confOk && probYes && yesScore>=thr.scoreMin && trend5Pos){
-      rawDecision="BET YES"; entryTiming="IDEAL WINDOW"; signalReason="Strong YES: RTI price, avg, trend, VWAP, EMA aligned";
-    } else if(coreNo && cushionNo && confOk && probNo && noScore>=thr.scoreMin && !trend5Pos){
-      rawDecision="BET NO"; entryTiming="IDEAL WINDOW"; signalReason="Strong NO: RTI price, avg, trend, VWAP, EMA aligned";
-    } else if(confOk && probYes && yesScore>=thr.scoreMin && cushionYes){
-      rawDecision="BET YES"; entryTiming="ENTER WITH CAUTION"; signalReason="YES probable — core not perfect, verify RTI price direction";
-    } else if(confOk && probNo && noScore>=thr.scoreMin && cushionNo){
-      rawDecision="BET NO"; entryTiming="ENTER WITH CAUTION"; signalReason="NO probable — core not perfect, verify RTI price direction";
+    // ALL 3 STARS MUST AGREE — if any star contradicts, it is a SKIP
+    if(!threeStarsYes && !threeStarsNo){
+      rawDecision="SKIP"; entryTiming="3 STARS SPLIT";
+      signalReason="Price, Candle Avg, and Projected don't all agree — too risky to bet";
+    } else if(targetMagnetZone){
+      rawDecision="SKIP"; entryTiming="MAGNET ZONE";
+      signalReason="Target too close to projected avg — one candle flips it";
+    } else if(coreYes && cushionYes && confOk && probYes && yesScore>=thr.scoreMin && trend5Pos && threeStarsYes){
+      rawDecision="BET YES"; entryTiming="IDEAL WINDOW"; signalReason="Strong YES: all 3 stars + VWAP + EMA + cushion 2× ATR";
+    } else if(coreNo && cushionNo && confOk && probNo && noScore>=thr.scoreMin && !trend5Pos && threeStarsNo){
+      rawDecision="BET NO"; entryTiming="IDEAL WINDOW"; signalReason="Strong NO: all 3 stars + VWAP + EMA + cushion 2× ATR";
+    } else if(confOk && probYes && yesScore>=thr.scoreMin && cushionYes && threeStarsYes){
+      rawDecision="BET YES"; entryTiming="ENTER WITH CAUTION"; signalReason="YES — all 3 stars agree, supporting indicators confirm";
+    } else if(confOk && probNo && noScore>=thr.scoreMin && cushionNo && threeStarsNo){
+      rawDecision="BET NO"; entryTiming="ENTER WITH CAUTION"; signalReason="NO — all 3 stars agree, supporting indicators confirm";
     } else {
       rawDecision="SKIP"; entryTiming="WAIT";
-      signalReason=targetMagnetZone?"RTI price too close to target — skip":"Mixed signals — not safe enough";
+      signalReason=!threeStarsYes&&!threeStarsNo?"3 stars split — skip":targetMagnetZone?"Magnet zone — skip":"Mixed signals — cushion or score too low";
     }
   } else if(lateWin){
     // Late mode: relax confirmation, require large ATR cushion
@@ -2549,253 +2585,371 @@ async function runOptions1h(){
 
     r1h.innerHTML = `<div>
 
-    <!-- DIRECTION VERDICT -->
+    <!-- ① DIRECTION — first thing to see -->
     <div style="background:${recBg};border:2px solid ${recBorder};border-radius:8px;
       padding:10px 12px;margin-bottom:6px;">
-      <div style="font-size:10px;color:var(--muted);margin-bottom:2px;text-transform:uppercase;letter-spacing:.05em;">
-        Recommended direction
+      <div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">
+        Signal Direction
       </div>
-      <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;">
-        <div style="font-size:26px;font-weight:800;color:${recColor};">
-          ${recType==="call"?"▲ CALL":"▼ PUT"}
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+        <div>
+          <div style="font-size:28px;font-weight:800;color:${recColor};line-height:1;">
+            ${recType==="call"?"▲ UP (CALL)":"▼ DOWN (PUT)"}
+          </div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px;">${strength} · ${strengthPct}% of indicators agree</div>
         </div>
-        <div style="font-size:12px;color:var(--muted);">${strength} signal · ${strengthPct}%</div>
-      </div>
-      <div style="font-size:9.5px;color:var(--muted);line-height:1.5;">
-        BTC @ <b style="color:var(--text);">$${price.toFixed(0)}</b> &nbsp;·&nbsp;
-        Strike <b style="color:var(--text);">$${recStrike2.toLocaleString()}</b> &nbsp;·&nbsp;
-        Est. premium <b style="color:var(--warn);">~$${recPremium2.toFixed(0)}</b>
+        <div style="text-align:right;">
+          <div style="font-size:9px;color:var(--muted);">BTC Now</div>
+          <div style="font-size:18px;font-weight:700;color:var(--text);">$${price.toFixed(0)}</div>
+          <div style="font-size:9px;color:${ivCol2};margin-top:1px;">${ivNote2.split("—")[0].trim()}</div>
+        </div>
       </div>
     </div>
 
-    <!-- SUCCESS RATE -->
-    <div class="card" style="padding:8px 10px;margin-bottom:6px;">
-      <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:6px;letter-spacing:.04em;">
-        🎯 SUCCESS RATE
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px;">
-        <!-- Success % big display -->
-        <div style="text-align:center;padding:8px;background:${recBg};border:1px solid ${recBorder};border-radius:7px;">
-          <div style="font-size:9px;color:var(--muted);margin-bottom:2px;">Probability of profit</div>
-          <div style="font-size:28px;font-weight:800;color:${recColor};line-height:1;">${(recSuccess*100).toFixed(0)}%</div>
-          <div style="font-size:8.5px;color:${recSuccess>=0.65?"var(--yes)":recSuccess>=0.50?"var(--info)":recSuccess>=0.40?"var(--warn)":"var(--no)"};margin-top:2px;">
-            ${recSuccess>=0.65?"Strong":recSuccess>=0.50?"Moderate":recSuccess>=0.40?"Weak":"Poor"}
-          </div>
-          <div style="margin-top:4px;height:5px;background:#222;border-radius:3px;overflow:hidden;">
-            <div style="height:100%;width:${(recSuccess*100).toFixed(0)}%;background:${recColor};border-radius:3px;"></div>
-          </div>
+    <!-- ② SUCCESS RATE + INDICATOR SUPPORT — side by side -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px;">
+
+      <!-- Success probability -->
+      <div class="card" style="padding:8px;text-align:center;background:${recBg};border:1px solid ${recBorder};">
+        <div style="font-size:9px;color:var(--muted);margin-bottom:3px;">Success Probability</div>
+        <div style="font-size:30px;font-weight:800;color:${recColor};line-height:1;">${(recSuccess*100).toFixed(0)}%</div>
+        <div style="font-size:9px;font-weight:600;margin-top:2px;color:${recSuccess>=0.65?"var(--yes)":recSuccess>=0.50?"var(--info)":recSuccess>=0.40?"var(--warn)":"var(--no)"};">
+          ${recSuccess>=0.65?"Strong ✓":recSuccess>=0.50?"Moderate":"Low — risky"}
         </div>
-        <!-- Signal support % -->
-        <div style="text-align:center;padding:8px;background:#111;border:1px solid var(--border);border-radius:7px;">
-          <div style="font-size:9px;color:var(--muted);margin-bottom:2px;">Indicator support</div>
-          <div style="font-size:28px;font-weight:800;color:${supportPct>=70?"var(--yes)":supportPct>=50?"var(--info)":"var(--warn)"};line-height:1;">${supportPct}%</div>
-          <div style="font-size:8.5px;color:var(--muted);margin-top:2px;">${supportFactors.length}/${supportFactors.length+riskFactors.length} indicators agree</div>
-          <div style="margin-top:4px;height:5px;background:#222;border-radius:3px;overflow:hidden;">
-            <div style="height:100%;width:${supportPct}%;background:${supportPct>=70?"var(--yes)":supportPct>=50?"var(--info)":"var(--warn)"};border-radius:3px;"></div>
-          </div>
+        <div style="margin-top:5px;height:5px;background:#222;border-radius:3px;overflow:hidden;">
+          <div style="height:100%;width:${(recSuccess*100).toFixed(0)}%;background:${recColor};border-radius:3px;"></div>
         </div>
+        <div style="font-size:8px;color:var(--muted);margin-top:3px;">Enter if ≥ 50%</div>
       </div>
-      <!-- IV -->
-      <div style="font-size:9px;color:${ivCol2};padding:4px 7px;background:#111;border-radius:4px;border:1px solid ${ivCol2};">
-        📊 ${ivNote2}
+
+      <!-- Indicator support -->
+      <div class="card" style="padding:8px;text-align:center;">
+        <div style="font-size:9px;color:var(--muted);margin-bottom:3px;">Indicator Support</div>
+        <div style="font-size:30px;font-weight:800;line-height:1;
+          color:${supportPct>=70?"var(--yes)":supportPct>=50?"var(--info)":"var(--warn)"};">
+          ${supportPct}%
+        </div>
+        <div style="font-size:9px;font-weight:600;margin-top:2px;
+          color:${supportPct>=70?"var(--yes)":supportPct>=50?"var(--info)":"var(--warn)"};">
+          ${supportFactors.length} of ${supportFactors.length+riskFactors.length} agree
+        </div>
+        <div style="margin-top:5px;height:5px;background:#222;border-radius:3px;overflow:hidden;">
+          <div style="height:100%;width:${supportPct}%;background:${supportPct>=70?"var(--yes)":supportPct>=50?"var(--info)":"var(--warn)"};border-radius:3px;"></div>
+        </div>
+        <div style="font-size:8px;color:var(--muted);margin-top:3px;">Best when ≥ 70%</div>
       </div>
     </div>
 
-    <!-- SUPPORT FACTORS -->
+    <!-- ③ INDICATOR BREAKDOWN -->
     <div class="card" style="padding:8px 10px;margin-bottom:6px;">
-      <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:5px;letter-spacing:.04em;">
-        ✅ WHAT SUPPORTS THIS TRADE
-      </div>
-      ${supportFactors.length ? supportFactors.map(f=>`
-        <div style="display:flex;justify-content:space-between;align-items:center;
-          padding:4px 0;border-bottom:1px solid #1a1a1a;font-size:9.5px;">
-          <div style="display:flex;align-items:center;gap:5px;">
-            <span style="color:var(--yes);font-size:11px;">✓</span>
-            <span style="color:var(--text);">${f.label}</span>
-          </div>
-          <span style="font-size:8.5px;color:var(--yes);">+${f.weight} pts</span>
-        </div>`).join("") : `<div style="font-size:9px;color:var(--muted);">No strong support factors right now.</div>`}
-
-      ${riskFactors.length ? `
-      <div style="font-size:9px;font-weight:700;color:var(--warn);margin-top:6px;margin-bottom:3px;">⚠ WORKING AGAINST</div>
-      ${riskFactors.map(f=>`
-        <div style="display:flex;justify-content:space-between;align-items:center;
-          padding:4px 0;border-bottom:1px solid #1a1a1a;font-size:9.5px;">
-          <div style="display:flex;align-items:center;gap:5px;">
-            <span style="color:var(--no);font-size:11px;">✗</span>
-            <span style="color:var(--muted);">${f.label}</span>
-          </div>
-          <span style="font-size:8.5px;color:var(--no);">−${f.weight} pts</span>
-        </div>`).join("")}` : ""}
-
-      <div style="font-size:8.5px;color:var(--muted);margin-top:5px;padding-top:4px;
-        border-top:1px solid #1a1a1a;line-height:1.5;">
-        Trend: 5m ${trend5m>=0?"+":""}${trend5m.toFixed(0)} &nbsp;·&nbsp;
-        15m ${trend15m>=0?"+":""}${trend15m.toFixed(0)} &nbsp;·&nbsp;
-        30m ${trend30m>=0?"+":""}${trend30m.toFixed(0)} &nbsp;·&nbsp;
-        60m ${trend60m>=0?"+":""}${trend60m.toFixed(0)}
+      <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:5px;">✅ Supporting Indicators</div>
+      ${supportFactors.map(f=>`
+        <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #1a1a1a;font-size:9.5px;">
+          <span style="color:var(--yes);">✓ ${f.label}</span>
+          <span style="color:var(--yes);">+${f.weight} pts</span>
+        </div>`).join("")}
+      ${riskFactors.length?`
+        <div style="font-size:9px;font-weight:700;color:var(--warn);margin-top:5px;margin-bottom:2px;">⚠ Against this trade</div>
+        ${riskFactors.map(f=>`
+          <div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #1a1a1a;font-size:9.5px;">
+            <span style="color:var(--muted);">✗ ${f.label}</span>
+            <span style="color:var(--no);">−${f.weight} pts</span>
+          </div>`).join("")}` : ""}
+      <div style="font-size:8px;color:var(--muted);margin-top:4px;padding-top:4px;border-top:1px solid #1a1a1a;">
+        Trend: 5m ${trend5m>=0?"+":""}${trend5m.toFixed(0)} · 15m ${trend15m>=0?"+":""}${trend15m.toFixed(0)} · 30m ${trend30m>=0?"+":""}${trend30m.toFixed(0)} · 60m ${trend60m>=0?"+":""}${trend60m.toFixed(0)}
       </div>
     </div>
 
-    <!-- WHAT YOU GET — rewritten for clarity -->
-    <div class="card" style="padding:8px 10px;margin-bottom:6px;">
-      <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:6px;letter-spacing:.04em;">
-        💰 WHAT YOU GET
-      </div>
+    <!-- ④ CRYPTO.COM UPDOWN OPTIONS — main section -->
+    ${(()=>{
+      // ── Crypto.com UpDown Options ──────────────────────────────────────────
+      // WHAT THEY ARE:
+      //   UpDown options are fixed-cost contracts. You pay a set amount ($5/$10/$25/$50).
+      //   Each contract has a TARGET price (you win) and a STOP price (you lose only cost).
+      //   Contracts expire in: 1 Hour, 4 Hours, or Daily (Next Day).
+      //   You pick which expiry you want.
+      //
+      // TIME LIMITS (expiry options):
+      //   1 Hour  = contract closes in ~60 minutes from when you buy
+      //   4 Hours = contract closes in ~4 hours
+      //   Daily   = contract closes at end of trading day
+      //
+      // US LEGAL: Crypto.com UpDown Options are CFTC-regulated and available for US traders.
 
-      <!-- Key numbers first — the 3 things a beginner needs to know -->
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:8px;">
-        <div style="background:#111;border:1px solid var(--border);border-radius:6px;padding:5px 7px;text-align:center;">
-          <div style="font-size:8px;color:var(--muted);margin-bottom:2px;">You pay</div>
-          <div style="font-size:16px;font-weight:800;color:var(--warn);">$${recPremium2.toFixed(0)}</div>
-          <div style="font-size:8px;color:var(--muted);">premium (max loss)</div>
+      const isUp    = recType === "call";
+      const dirCol  = isUp ? "var(--yes)" : "var(--no)";
+      const dirBg3  = isUp ? "#052e16"    : "#450a0a";
+      const dirLbl  = isUp ? "▲ UP (Long)" : "▼ DOWN (Short)";
+
+      // Contract expiry options Crypto.com offers
+      const expiries = [
+        { label:"1 Hour",  mins:60,  note:"Matches this 1-hour signal",     rec:true  },
+        { label:"4 Hours", mins:240, note:"More time for BTC to move",       rec:false },
+        { label:"Daily",   mins:480, note:"Closes end of day (~8 hrs avg)",  rec:false },
+      ];
+
+      // 4 contract sizes — Target & Stop built in by Crypto.com
+      // Target = 1× ATR × multiplier in your direction
+      // Stop   = 0.5× ATR against your direction (built into contract)
+      const contracts = [
+        { name:"Starter", cost:5,  mult:0.8,  minBudget:"$5"  },
+        { name:"Standard",cost:10, mult:1.2,  minBudget:"$10" },
+        { name:"Pro",     cost:25, mult:1.8,  minBudget:"$25" },
+        { name:"Max",     cost:50, mult:2.5,  minBudget:"$50" },
+      ].map(c=>{
+        const target   = isUp ? price+(atr1h*c.mult) : price-(atr1h*c.mult);
+        const stop     = isUp ? price-(atr1h*0.5)    : price+(atr1h*0.5);
+        const movNeed  = Math.abs(target - price);
+        const stopDist = Math.abs(stop - price);
+        // Payout ratio: target distance / stop distance (Crypto.com typical structure)
+        const ratio    = movNeed / stopDist;
+        const grossPay = c.cost * ratio * 0.90; // ~10% platform take
+        const netProfit= +(grossPay - c.cost - 1.99).toFixed(2);
+        const roi      = +((netProfit/(c.cost+1.99))*100).toFixed(0);
+        // Success probability for this contract's specific target
+        const prob     = singleSideAnalysis(recType, target, c.cost,
+                           price, hourlyMove, bullScore, bearScore, totalWeight, dvol);
+        const probCol  = prob>=0.65?"var(--yes)":prob>=0.50?"var(--info)":prob>=0.40?"var(--warn)":"var(--no)";
+        const covered  = hourlyMove >= movNeed;
+        return {...c, target, stop, movNeed, stopDist, ratio, grossPay, netProfit, roi, prob, probCol, covered};
+      });
+
+      // Best recommended contract
+      const best = contracts.find(c=>c.prob>=0.50) || contracts[0];
+
+      return `
+      <div style="background:#060e18;border:1.5px solid var(--info);border-radius:8px;
+        padding:8px 10px;margin-bottom:6px;">
+
+        <!-- Header -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div>
+            <div style="font-size:11px;font-weight:700;color:var(--info);">🇺🇸 Crypto.com UpDown Options</div>
+            <div style="font-size:8px;color:var(--yes);">✓ CFTC-regulated · Legal for US traders · Available on Crypto.com app</div>
+          </div>
+          <a href="https://crypto.com/app/updown-options" target="_blank"
+            style="font-size:9px;padding:3px 8px;border-radius:4px;border:1px solid var(--info);
+              color:var(--info);text-decoration:none;font-weight:700;white-space:nowrap;">Open App ↗</a>
         </div>
-        <div style="background:#111;border:1px solid var(--yes);border-radius:6px;padding:5px 7px;text-align:center;">
-          <div style="font-size:8px;color:var(--muted);margin-bottom:2px;">BTC must reach</div>
-          <div style="font-size:16px;font-weight:800;color:var(--yes);">$${(recStrike2 + (recType==="call"?recPremium2:-recPremium2)).toFixed(0)}</div>
-          <div style="font-size:8px;color:var(--muted);">to break even</div>
+
+        <!-- How UpDown works — plain English -->
+        <div style="background:#0a0a0a;border-radius:6px;padding:6px 8px;margin-bottom:8px;
+          font-size:9px;color:var(--muted);line-height:1.7;border:1px solid #222;">
+          <b style="color:var(--info);">How it works (3 simple rules):</b><br>
+          1️⃣ You pay a fixed amount ($5, $10, $25, or $50) — this is your <b style="color:var(--warn);">maximum loss</b><br>
+          2️⃣ If BTC reaches the <b style="color:${dirCol};">Target price</b> → you WIN and get paid automatically<br>
+          3️⃣ If BTC hits the <b style="color:var(--no);">Stop price</b> → contract closes, you lose only what you paid<br>
+          <span style="color:var(--muted);">No stop loss to set manually. Everything is built into the contract.</span>
         </div>
-        <div style="background:#111;border:1px solid var(--border);border-radius:6px;padding:5px 7px;text-align:center;">
-          <div style="font-size:8px;color:var(--muted);margin-bottom:2px;">Needs to move</div>
-          <div style="font-size:16px;font-weight:800;color:var(--text);">$${Math.abs((recStrike2+(recType==="call"?recPremium2:-recPremium2))-price).toFixed(0)}</div>
-          <div style="font-size:8px;color:var(--muted);">from now ($${price.toFixed(0)})</div>
-        </div>
-      </div>
 
-      <!-- ATR context — does the expected move cover the breakeven? -->
-      ${(()=>{
-        const neededMove = Math.abs((recStrike2+(recType==="call"?recPremium2:-recPremium2))-price);
-        const covered    = hourlyMove >= neededMove;
-        return `<div style="padding:5px 8px;border-radius:5px;margin-bottom:8px;font-size:9px;
-          background:${covered?"#052e16":"#200010"};
-          border:1px solid ${covered?"var(--yes)":"var(--no)"};">
-          <b style="color:${covered?"var(--yes)":"var(--no)"};">
-            ${covered?"✓ Expected move covers breakeven":"⚠ Expected move may NOT cover breakeven"}
-          </b><br>
-          <span style="color:var(--muted);">
-            Expected 1-hour move: $${hourlyMove.toFixed(0)} &nbsp;·&nbsp;
-            Breakeven needs: $${neededMove.toFixed(0)} &nbsp;·&nbsp;
-            ${covered
-              ? "Good — typical move should get you there"
-              : "Risky — BTC needs a bigger move than usual. Only enter if signal is STRONG."}
-          </span>
-        </div>`;
-      })()}
-
-      <!-- Scenario table — now with plain English labels -->
-      <div style="font-size:9px;font-weight:700;color:var(--muted);margin-bottom:3px;
-        text-transform:uppercase;letter-spacing:.05em;">What happens in each case</div>
-      ${(()=>{
-        const bePrice    = recStrike2 + (recType==="call" ? recPremium2 : -recPremium2);
-        const target1    = recType==="call" ? price + hourlyMove   : price - hourlyMove;
-        const target2    = recType==="call" ? price + hourlyMove*2 : price - hourlyMove*2;
-        const wrongWay   = recType==="call" ? price - hourlyMove   : price + hourlyMove;
-
-        const scenarios = [
-          {
-            emoji: "😐",
-            label: "BTC doesn't move",
-            sublabel: `Stays near $${price.toFixed(0)}`,
-            price: price,
-            explain: "You lose your premium. This is the worst case."
-          },
-          {
-            emoji: "📈",
-            label: recType==="call" ? "BTC goes up a little" : "BTC goes down a little",
-            sublabel: `BTC reaches $${target1.toFixed(0)} (moves $${hourlyMove.toFixed(0)})`,
-            price: target1,
-            explain: target1 > recStrike2 && recType==="call" || target1 < recStrike2 && recType==="put"
-              ? "BTC past your strike — you profit!"
-              : `BTC at $${target1.toFixed(0)} hasn't crossed your strike ($${recStrike2.toLocaleString()}) yet.`
-          },
-          {
-            emoji: "🚀",
-            label: recType==="call" ? "BTC goes up a lot" : "BTC goes down a lot",
-            sublabel: `BTC reaches $${target2.toFixed(0)} (moves $${(hourlyMove*2).toFixed(0)})`,
-            price: target2,
-            explain: "Strong move — this is the profitable scenario."
-          },
-          {
-            emoji: "❌",
-            label: "BTC moves the WRONG way",
-            sublabel: `Goes to $${wrongWay.toFixed(0)} instead`,
-            price: wrongWay,
-            explain: `You lose your $${recPremium2.toFixed(0)} premium. That's your maximum loss — nothing more.`
-          },
-        ];
-
-        return scenarios.map(s=>{
-          const p = optPnL(s.price, recStrike2, recPremium2, recType);
-          const isProfit = p.profit > 0;
-          const isBreak  = Math.abs(p.profit) < 2;
-          const pColor   = isProfit ? "var(--yes)" : isBreak ? "var(--muted)" : "var(--no)";
-          const rowBg    = isProfit ? "#041a08" : "#0a0a0a";
-
-          return `<div style="background:${rowBg};border-radius:5px;padding:6px 8px;margin-bottom:4px;">
-            <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-              <div style="flex:1;">
-                <div style="font-size:10px;font-weight:700;color:var(--text);">
-                  ${s.emoji} ${s.label}
+        <!-- Contract expiry times — IMPORTANT for beginners -->
+        <div style="margin-bottom:8px;">
+          <div style="font-size:9px;font-weight:700;color:var(--warn);margin-bottom:4px;">
+            ⏱ CONTRACT EXPIRY OPTIONS — Pick how long you want to hold
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;">
+            ${expiries.map(e=>`
+              <div style="background:${e.rec?"#0a1620":"#0a0a0a"};
+                border:${e.rec?"1px solid var(--info)":"1px solid #222"};
+                border-radius:5px;padding:5px 6px;text-align:center;">
+                <div style="font-size:11px;font-weight:700;color:${e.rec?"var(--info)":"var(--text)"};">
+                  ${e.label}
                 </div>
-                <div style="font-size:8.5px;color:var(--muted);margin-top:1px;">${s.sublabel}</div>
-                <div style="font-size:8.5px;color:var(--muted);margin-top:2px;line-height:1.3;">${s.explain}</div>
+                ${e.rec?`<div style="font-size:7.5px;background:#0c2240;color:var(--info);
+                  border-radius:3px;padding:1px 3px;margin:2px 0;">★ Recommended</div>`:""}
+                <div style="font-size:7.5px;color:var(--muted);margin-top:2px;">${e.note}</div>
+              </div>`).join("")}
+          </div>
+          <div style="font-size:8px;color:var(--muted);margin-top:3px;">
+            💡 Use <b style="color:var(--info);">1 Hour</b> when your 1-hour signal is STRONG.
+            Use <b>4 Hours</b> when signal is moderate and BTC needs more time to move.
+          </div>
+        </div>
+
+        <!-- Direction for this trade -->
+        <div style="background:${dirBg3};border:1px solid ${dirCol};border-radius:6px;
+          padding:5px 8px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <div style="font-size:8.5px;color:var(--muted);">Your signal: buy this direction</div>
+            <div style="font-size:15px;font-weight:800;color:${dirCol};">${dirLbl}</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:8.5px;color:var(--muted);">Current BTC</div>
+            <div style="font-size:13px;font-weight:700;">$${price.toFixed(0)}</div>
+            <div style="font-size:8px;margin-top:2px;">
+            <span style="color:var(--muted);">ATR: </span>
+            <span style="font-weight:700;color:${atr1h>=80?"var(--yes)":atr1h>=50?"var(--info)":atr1h>=30?"var(--warn)":"var(--no)"};">
+              $${atr1h.toFixed(0)}
+              ${atr1h>=80?" ✓ Active":atr1h>=50?" OK":atr1h>=30?" ⚠ Low":" 🚫 Too quiet"}
+            </span>
+          </div>
+          </div>
+        </div>
+
+        <!-- ATR quality gate — warn or block when market is too quiet -->
+        ${(()=>{
+          // Minimum viable ATR for UpDown options to be worth trading:
+          // - Fee is $1.99 flat
+          // - Need at least $10 profit potential to justify the fee
+          // - At Starter ($5) contract: need ATR > ~50 for meaningful payout
+          if(atr1h < 30){
+            return `<div style="background:#200010;border:2px solid var(--no);border-radius:7px;
+              padding:10px 12px;margin-bottom:6px;text-align:center;">
+              <div style="font-size:16px;margin-bottom:4px;">🚫</div>
+              <div style="font-size:12px;font-weight:800;color:var(--no);margin-bottom:3px;">
+                MARKET TOO QUIET — DO NOT TRADE OPTIONS
               </div>
-              <div style="text-align:right;padding-left:8px;min-width:60px;">
-                <div style="font-size:15px;font-weight:800;color:${pColor};">
-                  ${p.profit>0?"+":p.profit<0?"-":""}$${Math.abs(p.profit).toFixed(0)}
-                </div>
-                <div style="font-size:8px;color:var(--muted);">${isProfit?p.roi.toFixed(0)+"%ROI":"loss"}</div>
+              <div style="font-size:9px;color:var(--muted);line-height:1.6;">
+                Current ATR: <b style="color:var(--no);">$${atr1h.toFixed(0)}</b> — BTC is barely moving.<br>
+                Minimum ATR needed for UpDown options: <b style="color:var(--yes);">$50+</b><br>
+                At this ATR, the $1.99 fee eats all your profit. Wait for active market.
+              </div>
+              <div style="margin-top:6px;padding:5px 8px;background:#0a0a0a;border-radius:5px;
+                font-size:8.5px;color:var(--muted);line-height:1.5;">
+                Come back when ATR is above $50.<br>
+                Typical active hours: US market open (9:30 AM–4 PM ET) and crypto news events.
+              </div>
+            </div>`;
+          } else if(atr1h < 60){
+            return `<div style="background:#1c1400;border:1.5px solid var(--warn);border-radius:6px;
+              padding:6px 10px;margin-bottom:6px;">
+              <div style="font-size:10px;font-weight:700;color:var(--warn);">
+                ⚠ LOW ATR ($${atr1h.toFixed(0)}) — Only Starter contract makes sense
+              </div>
+              <div style="font-size:8.5px;color:var(--muted);margin-top:2px;line-height:1.4;">
+                Market is quiet. Pro/Max contracts have unreachable targets.
+                Stick to Starter ($5) only, or wait for ATR above $60.
+              </div>
+            </div>`;
+          }
+          return "";
+        })()}
+
+        <!-- 4 available contracts -->
+        <div style="font-size:9.5px;font-weight:700;color:var(--muted);margin-bottom:4px;
+          text-transform:uppercase;letter-spacing:.05em;">
+          Available contracts — choose one:
+        </div>
+
+        ${contracts.map(c=>{
+          const isRec = c.name === best.name;
+          return `<div style="background:${isRec?"#0a1e10":"#0a0a0a"};
+            border:${isRec?"1.5px solid var(--yes)":"1px solid #1a1a1a"};
+            border-radius:7px;padding:7px 9px;margin-bottom:5px;">
+
+            <!-- Contract header row -->
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
+              <div style="display:flex;align-items:center;gap:5px;">
+                <span style="font-size:11px;font-weight:700;color:${isRec?"var(--yes)":"var(--text)"};">
+                  ${isRec?"★ ":""}${c.name}
+                </span>
+                ${isRec?`<span style="font-size:8px;padding:1px 6px;border-radius:10px;
+                  background:#052e16;color:var(--yes);border:1px solid var(--yes);">Best pick</span>`:""}
+              </div>
+              <!-- Success probability badge -->
+              <div style="text-align:right;">
+                <div style="font-size:8px;color:var(--muted);">Success chance</div>
+                <div style="font-size:13px;font-weight:800;color:${c.probCol};">${(c.prob*100).toFixed(0)}%</div>
               </div>
             </div>
-            ${isProfit?`<div style="font-size:8.5px;color:var(--yes);margin-top:3px;padding-top:3px;border-top:1px solid #1a3a1a;">
-              ⚡ Sell the option now — don't wait for expiry
-            </div>`:""}
+
+            <!-- Probability bar -->
+            <div style="height:4px;background:#222;border-radius:2px;overflow:hidden;margin-bottom:6px;">
+              <div style="height:100%;width:${(c.prob*100).toFixed(0)}%;background:${c.probCol};border-radius:2px;"></div>
+            </div>
+
+            <!-- 4 key numbers -->
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:3px;">
+              <div style="background:#111;border-radius:4px;padding:4px 5px;text-align:center;">
+                <div style="font-size:7.5px;color:var(--muted);">You pay</div>
+                <div style="font-size:13px;font-weight:700;color:var(--warn);">$${c.cost}</div>
+                <div style="font-size:7px;color:var(--muted);">+$1.99 fee</div>
+              </div>
+              <div style="background:#111;border-radius:4px;padding:4px 5px;text-align:center;border:1px solid ${dirCol}20;">
+                <div style="font-size:7.5px;color:var(--muted);">Target 🎯</div>
+                <div style="font-size:12px;font-weight:700;color:${dirCol};">$${c.target.toFixed(0)}</div>
+                <div style="font-size:7px;color:${c.covered?"var(--yes)":"var(--warn)"};">
+                  ${isUp?"+":"-"}$${c.movNeed.toFixed(0)} ${c.covered?"✓":"⚠"}
+                </div>
+              </div>
+              <div style="background:#111;border-radius:4px;padding:4px 5px;text-align:center;border:1px solid #ff000020;">
+                <div style="font-size:7.5px;color:var(--muted);">Stop 🛑</div>
+                <div style="font-size:12px;font-weight:700;color:var(--no);">$${c.stop.toFixed(0)}</div>
+                <div style="font-size:7px;color:var(--muted);">built-in</div>
+              </div>
+              <div style="background:${c.netProfit>0?"#041a08":"#0a0a0a"};border-radius:4px;
+                padding:4px 5px;text-align:center;border:1px solid ${c.netProfit>0?"var(--yes)":"#333"};">
+                <div style="font-size:7.5px;color:var(--muted);">If win 💰</div>
+                <div style="font-size:13px;font-weight:700;color:${c.netProfit>0?"var(--yes)":"var(--no)"};">
+                  ${c.netProfit>0?"+":"-"}$${Math.abs(c.netProfit).toFixed(0)}
+                </div>
+                <div style="font-size:7px;color:var(--muted);">${c.roi}% ROI</div>
+              </div>
+            </div>
+
+            <!-- ATR coverage note -->
+            <div style="font-size:8px;color:${c.covered?"var(--yes)":"var(--warn)"};margin-top:4px;">
+              ${c.covered
+                ? `✓ Expected move ($${hourlyMove.toFixed(0)}) covers Target — realistic`
+                : `⚠ Expected move ($${hourlyMove.toFixed(0)}) may not reach Target ($${c.movNeed.toFixed(0)} needed)`}
+            </div>
           </div>`;
-        }).join("");
-      })()}
+        }).join("")}
 
-      <div style="font-size:8.5px;color:var(--muted);margin-top:4px;line-height:1.5;">
-        ⚠ Premiums are Black-Scholes estimates — check live price on Bybit/OKX before buying.
-      </div>
-    </div>
+        <!-- Indicators per contract note -->
+        <div style="font-size:8.5px;color:var(--muted);padding:5px 7px;background:#0a0a0a;
+          border-radius:5px;border:1px solid #222;margin-bottom:6px;">
+          <b style="color:var(--info);">Why these probabilities?</b><br>
+          ${supportFactors.length} of ${supportFactors.length+riskFactors.length} indicators (${supportPct}%) support this direction.
+          The success % per contract also depends on how far the Target is —
+          closer target = higher chance but lower payout. Further target = lower chance but bigger payout.
+        </div>
 
-    <!-- EXIT RULES — simple -->
-    <div class="card" style="padding:8px 10px;margin-bottom:6px;border:1px solid var(--warn);">
-      <div style="font-size:10px;font-weight:700;color:var(--warn);margin-bottom:5px;letter-spacing:.04em;">
-        ⚡ WHEN TO SELL
-      </div>
-      <div style="font-size:9.5px;line-height:1.9;">
-        <div style="color:var(--yes);">✓ Sell when option value = 2× what you paid</div>
-        <div style="color:var(--yes);">✓ Exit at 45 minutes — time decay kills value fast</div>
-        <div style="color:var(--no);">✗ Sell if option loses 50% of value (cut loss)</div>
-        <div style="color:var(--muted);">— Never hold to expiry on 1-hour options</div>
-      </div>
-    </div>
+        <!-- Step by step how to place -->
+        <div style="background:#0a0a0a;border-radius:6px;padding:6px 8px;
+          font-size:8.5px;color:var(--muted);line-height:1.8;border:1px solid #222;">
+          <b style="color:var(--info);">📱 How to place this trade (step by step):</b><br>
+          1. Open <b style="color:var(--text);">Crypto.com app</b> → tap <b style="color:var(--text);">UpDown Options</b><br>
+          2. Select <b style="color:var(--text);">BTC</b><br>
+          3. Choose direction: <b style="color:${dirCol};">${dirLbl}</b><br>
+          4. Select expiry: <b style="color:var(--info);">1 Hour</b> (matches this signal)<br>
+          5. Pick <b style="color:var(--yes);">★ ${best.name} ($${best.cost})</b> — best success rate<br>
+          6. Verify: Target <b style="color:${dirCol};">$${best.target.toFixed(0)}</b> · Stop <b style="color:var(--no);">$${best.stop.toFixed(0)}</b><br>
+          7. Tap <b>Review → Confirm</b><br>
+          8. <b style="color:var(--yes);">Contract closes automatically</b> when Target or Stop is hit ✓
+        </div>
+      </div>`;
+    })()}
 
-    <!-- WHERE TO TRADE -->
-    <div class="card" style="padding:8px 10px;">
-      <div style="font-size:10px;font-weight:700;color:var(--info);margin-bottom:4px;letter-spacing:.04em;">
-        🏦 WHERE TO TRADE
-      </div>
-      <div style="font-size:9px;color:var(--warn);font-weight:700;margin-bottom:4px;">
-        ⚠ Coinbase does NOT offer BTC options
-      </div>
+    <!-- ⑤ OTHER US OPTIONS (compact, secondary) -->
+    <div class="card" style="padding:6px 10px;margin-bottom:6px;">
+      <div style="font-size:9px;font-weight:700;color:var(--muted);margin-bottom:4px;">Other US-Legal Platforms</div>
       ${[
-        {name:"★ Bybit",   url:"bybit.com",   note:"Best for beginners · TP/SL on options · Mobile app"},
-        {name:"★ OKX",     url:"okx.com",     note:"Simple interface · Good for small amounts"},
-        {name:"Deribit",   url:"deribit.com", note:"Most liquid · Best real prices"},
+        {name:"Coinbase Advanced", note:"Perpetual Futures · No expiry · Set stop loss manually · Nano BTC 0.01", url:"coinbase.com"},
+        {name:"CME via IBKR",      note:"Weekly BTC options · Brokerage account needed · Larger size",            url:"interactivebrokers.com"},
+        {name:"Bitnomial",         note:"CFTC-regulated · Real BTC options · More complex setup",                 url:"bitnomial.com"},
       ].map(p=>`
-        <div style="display:flex;justify-content:space-between;align-items:center;
-          padding:4px 0;border-bottom:1px solid #1a1a1a;font-size:9.5px;">
+        <div style="display:flex;justify-content:space-between;padding:3px 0;
+          border-bottom:1px solid #1a1a1a;font-size:9px;">
           <div>
-            <span style="font-weight:700;color:var(--info);">${p.name}</span>
-            <div style="font-size:8px;color:var(--muted);">${p.note}</div>
+            <span style="color:var(--text);font-weight:600;">${p.name}</span>
+            <div style="font-size:7.5px;color:var(--muted);">${p.note}</div>
           </div>
           <span style="font-size:8px;color:var(--muted);">${p.url}</span>
         </div>`).join("")}
+      <div style="font-size:8px;color:var(--no);margin-top:4px;padding-top:3px;border-top:1px solid #1a1a1a;">
+        ❌ Bybit · Deribit · Binance · OKX — NOT available for US residents
+      </div>
+    </div>
+
+    <div style="font-size:8px;color:var(--muted);padding:0 0 8px;line-height:1.5;">
+      ⚠ Target/Stop levels are estimates based on ATR ($${atr1h.toFixed(0)}).
+      Actual contract values in Crypto.com app may differ slightly. Always verify before buying.<br>
+      Rule: Only enter when success probability ≥ 50% AND indicator support ≥ 60%.
     </div>
 
     </div>`;
+
 
   } catch(e){
     console.error(e);
@@ -2806,8 +2960,48 @@ async function runOptions1h(){
   }
 }
 
+// ── Daily Loss Tracker ─────────────────────────────────────────────────────
+function getLossData(){
+  const today = new Date().toDateString();
+  const d = JSON.parse(localStorage.getItem("lossTrack")||"{}");
+  if(d.date !== today) return { date:today, w:0, l:0 };
+  return d;
+}
+function saveLossData(d){ localStorage.setItem("lossTrack", JSON.stringify(d)); }
+
+function updateLossUI(){
+  const d = getLossData();
+  $("lossW").textContent = d.w+"W";
+  $("lossL").textContent = d.l+"L";
+  const status = $("lossStatus");
+  if(d.l >= 2){
+    status.textContent = "⛔ STOP for today — 2 losses reached";
+    status.style.color = "var(--no)";
+  } else if(d.l === 1){
+    status.textContent = "⚠ 1 loss — next loss = stop";
+    status.style.color = "var(--warn)";
+  } else {
+    status.textContent = "✓ Good to trade";
+    status.style.color = "var(--yes)";
+  }
+}
+
+function recordResult(type){
+  const d = getLossData();
+  if(type==="w") d.w++; else d.l++;
+  d.date = new Date().toDateString();
+  saveLossData(d);
+  updateLossUI();
+}
+
+function resetTracker(){
+  localStorage.removeItem("lossTrack");
+  updateLossUI();
+}
+
 window.addEventListener("DOMContentLoaded",()=>{
   loadKalshiTarget($("coin").value);
+  updateLossUI();
 
   $("coin").addEventListener("change",()=>{
     $("result").innerHTML = "";
