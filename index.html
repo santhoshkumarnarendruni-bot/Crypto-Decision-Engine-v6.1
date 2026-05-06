@@ -124,6 +124,20 @@
   <span id="timerCountdown" style="color:var(--warn);font-weight:700;">--:--</span>
 </div>
 <div class="timer-wrap"><div class="timer-bar" id="timerBar"></div></div>
+
+<!-- Tab switcher -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px;">
+  <button id="tab15m" onclick="switchTab('15m')"
+    style="padding:6px;border-radius:5px;border:none;font-size:11px;font-weight:700;cursor:pointer;
+           background:var(--yes);color:#000;">
+    📊 15-Min Prediction
+  </button>
+  <button id="tab1h" onclick="switchTab('1h')"
+    style="padding:6px;border-radius:5px;border:none;font-size:11px;font-weight:700;cursor:pointer;
+           background:var(--card);color:var(--muted);border:1px solid var(--border);">
+    ⚡ 1-Hour Options
+  </button>
+</div>
 <!-- Kalshi API Key Panel -->
 <details id="kalshiKeyPanel" style="margin-bottom:8px;">
   <summary style="cursor:pointer;font-size:11px;font-family:'JetBrains Mono',monospace;
@@ -208,12 +222,15 @@
 
   <div id="betLog" style="display:none;font-size:9.5px;font-family:'JetBrains Mono',monospace;
     padding:5px 8px;background:#0d1a0d;border-radius:5px;border:1px solid #1a3a1a;line-height:1.6;"></div>
-  <div style="font-size:8.5px;color:var(--muted);margin-top:4px;line-height:1.4;">
-    Each contract pays $1 if you win. Cost = price per contract × qty. Kalshi takes ~5% fee on profit.
+  <div style="font-size:8.5px;color:var(--muted);margin-top:4px;line-height:1.5;">
+    Each contract pays $1 if win. Fee = 7¢ × price × (1−price) per contract.<br>
+    Max fee at 50¢ = 1.75¢/contract. At 30¢ or 70¢ = 1.47¢. At 10¢ or 90¢ = 0.63¢.<br>
+    <span style="color:var(--info);">💡 Maker orders (limit price) pay only 25% of this fee.</span>
   </div>
 </div>
 
-<div id="result"></div>
+<div id="result15m"><div id="result"></div></div>
+<div id="result1h" style="display:none;"></div>
 
 <script>
 // ─── Utils ────────────────────────────────────────────────────────────────────
@@ -1278,6 +1295,25 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
 
   // [trap moved above]
 
+  // ── Return Optimizer ────────────────────────────────────────────────────────
+  // Calculates best entry strategy based on:
+  //   - Which side the tool recommends
+  //   - Whether Kalshi market is MISPRICING that side (= cheap contract = big return)
+  //   - Confidence-based bet sizing for $20 budget
+  //   - Early vs late entry timing impact on price
+
+  const returnOpt = (function(){
+    // Tool's recommended side
+    const recSide = yes > no ? "yes" : "no";
+    const toolYes = yes, toolNo = no;
+
+    return {
+      recSide,
+      toolYes, toolNo,
+      // will be enriched in renderResult with live Kalshi prices
+    };
+  })();
+
   return {
     yes, no, confidence,
     displayDecision, decisionCls, boxCls,
@@ -1300,7 +1336,7 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     p5, p10, p15,
     coreYes, coreNo,
     tooEarly, earlyWin, idealWin, lateWin, tooLate,
-    vwapOverride,
+    vwapOverride, returnOpt,
     trapSignal, trapCls, trapWarning, trapDetail, trapConflict, bullScore, bearScore,
     strongCushionYes, strongCushionNo, bullTrapPossible, bearTrapPossible,
     trendConsensus, momentumNudge, urgency
@@ -1435,6 +1471,8 @@ async function runOnce(){
                         candles1m, rsi, vol, atr, p5, p10, p15, latestAvg, aggrMode });
 
     lastRefreshTime = new Date();
+    // Store kalshiLive globally so updatePayoutPreview can access freshest prices
+    if(kalshiLive) window._lastKalshiLive = kalshiLive;
     renderResult(r, rtiData, kalshiLive, product, price, target, rsi, vol);
     // Update payout preview with fresh Kalshi prices
     if($("betPanel").style.display !== "none") updatePayoutPreview();
@@ -1492,6 +1530,178 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
   const refreshNote = lastRefreshTime
     ? `<div style="font-size:11px;color:var(--muted);margin-top:8px;">Updated ${lastRefreshTime.toLocaleTimeString()} ${isAuto?"· auto "+$("refreshRate").value+"s":""}</div>`
     : "";
+
+  // ── Return Optimizer HTML (computed before innerHTML) ────────────────────────
+  let returnOptHtml = "";
+  (function(){
+    // ── Price source: use kalshiLive (freshest) then fall back to _kalshiResult ──
+    // NEVER use r.marketYes/marketNo as prices — those can be 0 when rejected
+    const klSrc   = (kalshiLive?.yesBid != null) ? kalshiLive
+                  : (window._kalshiResult?.yesBid != null) ? window._kalshiResult
+                  : null;
+
+    const yesBid  = klSrc?.yesBid ?? null;
+    const yesAsk  = klSrc?.yesAsk ?? null;
+
+    // Kalshi returns YES prices only. NO prices are the mirror:
+    //   NO bid = 1 - YES ask  (someone buying NO = someone selling YES)
+    //   NO ask = 1 - YES bid
+    const noBid   = yesAsk != null ? (1 - yesAsk) : null;   // NO bid = 1 - YES ask
+    const noAsk   = yesBid != null ? (1 - yesBid) : null;   // NO ask = 1 - YES bid
+
+    // Buy price = the ASK (what you pay when buying)
+    // YES ask = what you pay to buy YES contracts
+    // NO ask  = 1 - YES bid (what you pay to buy NO contracts)
+    const yesBuyP = yesAsk ?? (yesBid != null ? Math.min(0.99, yesBid + 0.01) : null);
+    const noBuyP  = noAsk  ?? (noBid  != null ? Math.min(0.99, noBid  + 0.01) : null);
+
+    // Tool's recommended side (based on technical analysis, not market price)
+    const toolSide = r.yes > r.no ? "yes" : "no";
+    const toolProb = toolSide === "yes" ? r.yes : r.no;
+
+    // Market pricing for the tool's recommended side (from live Kalshi prices)
+    const mktPricingThisSide = toolSide === "yes"
+      ? (yesBuyP ?? r.yes)
+      : (noBuyP  ?? r.no);
+
+    // Mispricing gap: positive = market underpricing your side = cheap = good value
+    const mispricingGap = toolProb - mktPricingThisSide;
+
+    // Confidence-based sizing (on $20 budget)
+    let suggestedAmt = 5;
+    if(r.confidence >= 85) suggestedAmt = 20;
+    else if(r.confidence >= 75) suggestedAmt = 15;
+    else if(r.confidence >= 65) suggestedAmt = 10;
+    else suggestedAmt = 5;
+
+    // If VWAP trap detected + market clearly wrong → max size
+    const trapBoost = (r.trapSignal !== "NONE" && r.trapSignal.includes("TRAP") &&
+                       !r.trapSignal.includes("WATCH") && mispricingGap > 0.10);
+    if(trapBoost) suggestedAmt = 20;
+
+    // Calc payout for suggested side at current price
+    function payout(buyP, amt){
+      if(!buyP || buyP <= 0 || buyP >= 1) return null;
+      const contracts = Math.floor(amt / buyP);
+      const cost      = contracts * buyP;
+      const gross     = contracts - cost;
+      const net       = gross * 0.95; // 5% fee
+      const retPct    = (net / cost) * 100;
+      return { contracts, cost, gross, net, retPct, buyP };
+    }
+
+    const py = yesBuyP ? payout(yesBuyP, suggestedAmt) : null;
+    const pn = noBuyP  ? payout(noBuyP,  suggestedAmt) : null;
+    const recPayout = toolSide === "yes" ? py : pn;
+
+    // Entry timing recommendation
+    const tl = r.timeLeft;
+    let timingRec = "", timingColor = "var(--muted)";
+    if(tl > 6){
+      timingRec  = `Wait — ${tl.toFixed(1)} min left. Price will drift. Enter at 6–3 min for better value.`;
+      timingColor = "var(--warn)";
+    } else if(tl >= 3 && tl <= 6){
+      timingRec  = "✓ IDEAL window — enter now for best price/return balance.";
+      timingColor = "var(--yes)";
+    } else if(tl >= 1 && tl < 3){
+      timingRec  = `Late entry — price locked near ${mktPricingThisSide!=null?(mktPricingThisSide*100).toFixed(0)+"¢":""}, lower return but signal is clearest now.`;
+      timingColor = "var(--info)";
+    } else {
+      timingRec  = "Too late — under 1 min.";
+      timingColor = "var(--no)";
+    }
+
+    // Mispricing alert
+    let mispricingMsg = "", mispricingColor = "var(--muted)";
+    if(mispricingGap >= 0.15){
+      mispricingMsg  = `Market pricing ${toolSide.toUpperCase()} at ${(mktPricingThisSide*100).toFixed(0)}¢ but tool says ${(toolProb*100).toFixed(0)}% — GAP ${(mispricingGap*100).toFixed(0)}¢. HIGH VALUE bet.`;
+      mispricingColor = "var(--yes)";
+    } else if(mispricingGap >= 0.08){
+      mispricingMsg  = `Moderate mispricing — market at ${(mktPricingThisSide*100).toFixed(0)}¢, tool at ${(toolProb*100).toFixed(0)}%. Good value.`;
+      mispricingColor = "var(--info)";
+    } else if(mispricingGap > 0){
+      mispricingMsg  = `Small edge — market and tool close. Normal return.`;
+      mispricingColor = "var(--muted)";
+    } else if(mispricingGap < -0.10){
+      mispricingMsg  = `Market already pricing ${toolSide.toUpperCase()} HIGHER than tool — low return. Consider waiting.`;
+      mispricingColor = "var(--warn)";
+    }
+
+    if(!yesBuyP && !noBuyP){
+      returnOptHtml = `<div class="card" style="padding:6px 9px;margin-bottom:5px;">
+        <div class="sec" style="margin-top:0;">Return Optimizer</div>
+        <div style="font-size:9px;color:var(--muted);">Load API key and analyze to see return optimizer.</div>
+      </div>`;
+      return;
+    }
+
+    returnOptHtml = `<div class="card" style="padding:6px 9px;margin-bottom:5px;border:1px solid ${r.confidence>=75?"var(--yes)":"var(--border)"};">
+      <div class="sec" style="margin-top:0;">💰 Return Optimizer</div>
+
+      <!-- Recommended bet sizing -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:6px;">
+        <div style="background:#052e16;border:1px solid var(--yes);border-radius:5px;padding:4px 6px;">
+          <div style="font-size:8px;color:var(--muted);text-transform:uppercase;">Suggested Bet</div>
+          <div style="font-size:16px;font-weight:800;color:var(--yes);">$${suggestedAmt}</div>
+          <div style="font-size:8.5px;color:var(--muted);">Conf ${r.confidence}% → size $${suggestedAmt}</div>
+          ${trapBoost?`<div style="font-size:8px;color:var(--warn);">⚡ Trap signal → max size</div>`:""}
+        </div>
+        <div style="background:${toolSide==="yes"?"#052e16":"#450a0a"};border:1px solid ${toolSide==="yes"?"var(--yes)":"var(--no)"};border-radius:5px;padding:4px 6px;">
+          <div style="font-size:8px;color:var(--muted);text-transform:uppercase;">Bet ${toolSide.toUpperCase()} @ $${suggestedAmt}</div>
+          ${recPayout ? `
+          <div style="font-size:16px;font-weight:800;color:${toolSide==="yes"?"var(--yes)":"var(--no)"};">
+            $${(recPayout.cost + recPayout.net).toFixed(2)}
+          </div>
+          <div style="font-size:8.5px;color:var(--muted);">${recPayout.contracts} contracts @ ${(recPayout.buyP*100).toFixed(0)}¢</div>
+          <div style="font-size:8.5px;color:var(--yes);">profit +$${recPayout.net.toFixed(2)} (+${recPayout.retPct.toFixed(0)}%)</div>
+          <div style="font-size:8.5px;color:var(--no);">loss   -$${recPayout.cost.toFixed(2)}</div>
+          ` : `<div style="font-size:9px;color:var(--muted);">Analyze to see payout</div>`}
+        </div>
+      </div>
+
+      <!-- Both sides comparison at $20 -->
+      <div style="font-size:9px;font-weight:700;color:var(--muted);margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em;">
+        $20 comparison — both sides
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:6px;">
+        <div style="background:#0a0a0a;border:1px solid var(--border);border-radius:5px;padding:4px 6px;">
+          ${py ? `
+          <div style="font-size:8px;color:var(--yes);font-weight:700;">YES @ ${(py.buyP*100).toFixed(0)}¢</div>
+          <div style="font-size:12px;font-weight:800;color:var(--yes);">+$${py.net.toFixed(2)}</div>
+          <div style="font-size:8px;color:var(--muted);">${py.contracts} contracts · ${py.retPct.toFixed(0)}% ROI</div>
+          <div style="font-size:8px;color:var(--warn);">fee $${(py.contracts*0.07*py.buyP*(1-py.buyP)).toFixed(3)}</div>
+          <div style="font-size:8px;color:var(--no);">risk -$${(py.cost+py.contracts*0.07*py.buyP*(1-py.buyP)).toFixed(2)}</div>
+          ` : `<div style="font-size:9px;color:var(--muted);">YES price unavailable</div>`}
+        </div>
+        <div style="background:#0a0a0a;border:1px solid var(--border);border-radius:5px;padding:4px 6px;">
+          ${pn ? `
+          <div style="font-size:8px;color:var(--no);font-weight:700;">NO @ ${(pn.buyP*100).toFixed(0)}¢</div>
+          <div style="font-size:12px;font-weight:800;color:var(--no);">+$${pn.net.toFixed(2)}</div>
+          <div style="font-size:8px;color:var(--muted);">${pn.contracts} contracts · ${pn.retPct.toFixed(0)}% ROI</div>
+          <div style="font-size:8px;color:var(--warn);">fee $${(pn.contracts*0.07*pn.buyP*(1-pn.buyP)).toFixed(3)}</div>
+          <div style="font-size:8px;color:var(--no);">risk -$${(pn.cost+pn.contracts*0.07*pn.buyP*(1-pn.buyP)).toFixed(2)}</div>
+          ` : `<div style="font-size:9px;color:var(--muted);">NO price unavailable</div>`}
+        </div>
+      </div>
+
+      <!-- Mispricing alert -->
+      ${mispricingMsg ? `
+      <div style="font-size:9.5px;color:${mispricingColor};padding:3px 6px;background:#0a0a0a;
+        border-radius:4px;border:1px solid ${mispricingColor};margin-bottom:5px;line-height:1.4;">
+        📊 ${mispricingMsg}
+      </div>` : ""}
+
+      <!-- Timing recommendation -->
+      <div style="font-size:9.5px;color:${timingColor};line-height:1.4;">
+        ⏱ ${timingRec}
+      </div>
+
+      <!-- Sizing guide -->
+      <div style="font-size:8px;color:var(--muted);margin-top:5px;line-height:1.5;border-top:1px solid var(--border);padding-top:4px;">
+        Sizing rule: Conf &lt;65% → $5 · 65–75% → $10 · 75–85% → $15 · &gt;85% → $20 · Trap signal → $20
+      </div>
+    </div>`;
+  })();
 
   // Build VWAP override HTML before innerHTML (avoid nested backtick)
   const vo = r.vwapOverride;
@@ -1648,6 +1858,9 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
     <div class="banner banner-${r.earlyBiasClass}" style="margin-bottom:5px;font-size:11px;">
       ${r.earlyBiasClass==="yes"?"📈":r.earlyBiasClass==="no"?"📉":"⚡"} ${r.earlyBias}
     </div>` : ""}
+
+    <!-- RETURN OPTIMIZER -->
+    ${returnOptHtml}
 
     <!-- ROW 3: Price data + Indicators in 2-col card grid -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:5px;">
@@ -1915,28 +2128,34 @@ async function kalshiAuthHeaders(method, path){
 // Fee: ~5% of profit (Kalshi charges on winnings only).
 function updatePayoutPreview(){
   const dollars = parseFloat($("betDollars").value) || 0;
-  const kr      = window._kalshiResult;
+  // Use freshest available Kalshi prices — same priority as returnOptimizer
+  const klSrcP   = (window._lastKalshiLive?.yesBid != null) ? window._lastKalshiLive
+                 : (window._kalshiResult?.yesBid  != null) ? window._kalshiResult
+                 : null;
 
-  // Get current YES and NO prices from latest Kalshi data
-  const yesBid = kr?.yesBid ?? null;
-  const yesAsk = kr?.yesAsk ?? null;
-  const noBid  = yesBid != null ? 1 - yesBid : null;
-  const noAsk  = yesAsk != null ? 1 - yesAsk : null;
+  const yesBid = klSrcP?.yesBid ?? null;
+  const yesAsk = klSrcP?.yesAsk ?? null;
+  // NO prices are mirror of YES (Kalshi convention)
+  const noBid  = yesAsk != null ? (1 - yesAsk) : null;  // NO bid = 1 - YES ask
+  const noAsk  = yesBid != null ? (1 - yesBid) : null;  // NO ask = 1 - YES bid
 
-  // Buy price = ask price (what you pay to enter)
-  const yesBuyPrice = yesAsk ?? (yesBid != null ? yesBid + 0.01 : null);
-  const noBuyPrice  = noAsk  ?? (noBid  != null ? noBid  + 0.01 : null);
+  // Buy price = ASK (what you pay)
+  const yesBuyPrice = yesAsk ?? (yesBid != null ? Math.min(0.99, yesBid+0.01) : null);
+  const noBuyPrice  = noAsk  ?? (noBid  != null ? Math.min(0.99, noBid +0.01) : null);
 
   function calcPayout(buyPrice, dollars){
     if(!buyPrice || buyPrice <= 0 || buyPrice >= 1) return null;
-    const contracts  = Math.floor(dollars / buyPrice);  // whole contracts only
-    const totalCost  = contracts * buyPrice;
-    const payout     = contracts * 1.00;                // $1 per contract if win
-    const grossProfit = payout - totalCost;
-    const fee        = grossProfit * 0.05;              // ~5% Kalshi fee on profit
-    const netProfit  = grossProfit - fee;
-    const loss       = totalCost;                       // if you lose = cost gone
-    return { contracts, totalCost, payout, netProfit, loss, buyPrice };
+    const contracts   = Math.floor(dollars / buyPrice);
+    if(contracts < 1) return null;
+    const totalCost   = +(contracts * buyPrice).toFixed(4);
+    const payout      = contracts * 1.00;
+    const grossProfit = +(payout - totalCost).toFixed(4);
+    // Kalshi exact taker fee = 7% × C × (1-C) per contract
+    const feePerC     = 0.07 * buyPrice * (1 - buyPrice);
+    const totalFee    = +(contracts * feePerC).toFixed(4);
+    const netProfit   = +(grossProfit - totalFee).toFixed(4);
+    const totalLoss   = +(totalCost + totalFee).toFixed(4);
+    return { contracts, totalCost, payout, netProfit, totalFee, totalLoss, buyPrice };
   }
 
   const yCalc = yesBuyPrice != null ? calcPayout(yesBuyPrice, dollars) : null;
@@ -1945,8 +2164,8 @@ function updatePayoutPreview(){
   // Update YES payout card
   if(yCalc && yCalc.contracts > 0){
     $("payoutYes").textContent = `$${yCalc.payout.toFixed(2)}`;
-    $("profitYes").textContent = `profit +$${yCalc.netProfit.toFixed(2)} / loss -$${yCalc.loss.toFixed(2)}`;
-    $("priceYes").textContent  = `${yCalc.contracts} contracts @ ${(yCalc.buyPrice*100).toFixed(0)}¢`;
+    $("profitYes").textContent = `+$${yCalc.netProfit.toFixed(2)} profit / -$${yCalc.totalLoss.toFixed(2)} if lose`;
+    $("priceYes").textContent  = `${yCalc.contracts} contracts @ ${(yCalc.buyPrice*100).toFixed(0)}¢ · fee $${yCalc.totalFee.toFixed(3)}`;
   } else {
     $("payoutYes").textContent = "—";
     $("profitYes").textContent = "enter amount above";
@@ -1956,8 +2175,8 @@ function updatePayoutPreview(){
   // Update NO payout card
   if(nCalc && nCalc.contracts > 0){
     $("payoutNo").textContent = `$${nCalc.payout.toFixed(2)}`;
-    $("profitNo").textContent = `profit +$${nCalc.netProfit.toFixed(2)} / loss -$${nCalc.loss.toFixed(2)}`;
-    $("priceNo").textContent  = `${nCalc.contracts} contracts @ ${(nCalc.buyPrice*100).toFixed(0)}¢`;
+    $("profitNo").textContent = `+$${nCalc.netProfit.toFixed(2)} profit / -$${nCalc.totalLoss.toFixed(2)} if lose`;
+    $("priceNo").textContent  = `${nCalc.contracts} contracts @ ${(nCalc.buyPrice*100).toFixed(0)}¢ · fee $${nCalc.totalFee.toFixed(3)}`;
   } else {
     $("payoutNo").textContent = "—";
     $("profitNo").textContent = "enter amount above";
@@ -2017,12 +2236,25 @@ async function placeBetViaProxy(side){
       betBtn.textContent = "✓ Placed!";
       betBtn.style.background = "linear-gradient(135deg,#008844,#005522)";
       const $betLog = $("betLog");
+
+      // Calculate exact fee and payout for confirmation display
+      const contractPriceF  = (side==="yes" ? yesBuyP : noBuyP);
+      const feePerContractF = 0.07 * contractPriceF * (1 - contractPriceF);
+      const totalFeeF       = count * feePerContractF;
+      const totalCostF      = count * contractPriceF;
+      const grossProfitF    = count - totalCostF;          // if win: count×$1 - cost
+      const netProfitF      = grossProfitF - totalFeeF;
+      const totalPayoutF    = totalCostF + netProfitF;     // what you get back if win
+
       $betLog.style.display = "block";
-      $betLog.innerHTML = `<b style="color:var(--yes)">✓ ORDER PLACED</b><br>`+
-        `Side: ${side.toUpperCase()} · Count: ${count} · `+
-        `Price: ${side==="yes"?yesPrice:100-yesPrice}¢ · `+
-        `Order ID: <span style="color:var(--info)">${data.order.order_id||"—"}</span><br>`+
-        `Status: ${data.order.status||"submitted"} · Time: ${new Date().toLocaleTimeString()}`;
+      $betLog.innerHTML =
+        `<b style="color:var(--yes)">✓ ORDER PLACED</b><br>`+
+        `Side: <b>${side.toUpperCase()}</b> · ${count} contracts @ ${Math.round(contractPriceF*100)}¢<br>`+
+        `Cost: $${totalCostF.toFixed(2)} · `+
+        `Fee: $${totalFeeF.toFixed(3)} (${(feePerContractF*100).toFixed(2)}¢/contract)<br>`+
+        `<span style="color:var(--yes)">If WIN → get back $${totalPayoutF.toFixed(2)} · profit +$${netProfitF.toFixed(2)}</span><br>`+
+        `<span style="color:var(--no)">If LOSE → lose $${(totalCostF+totalFeeF).toFixed(2)}</span><br>`+
+        `Order ID: <span style="color:var(--info)">${data.order.order_id||"—"}</span> · ${new Date().toLocaleTimeString()}`;
     } else {
       const errMsg = data.message || data.error || JSON.stringify(data).slice(0,120);
       betBtn.textContent = "✗ Failed";
@@ -2058,6 +2290,357 @@ async function loadKalshiKey(){
     status.textContent = "✗ Invalid key: "+e.message;
     status.style.color = "var(--no)";
     _kalshiCrypto = null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 1-HOUR OPTIONS SIGNAL ENGINE
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _activeTab = "15m";
+
+function switchTab(tab){
+  _activeTab = tab;
+  const t15 = $("tab15m"), t1h = $("tab1h");
+  const r15 = $("result15m"), r1h = $("result1h");
+  if(tab === "15m"){
+    t15.style.background = "var(--yes)"; t15.style.color = "#000";
+    t1h.style.background = "var(--card)"; t1h.style.color = "var(--muted)";
+    t1h.style.border = "1px solid var(--border)";
+    r15.style.display = "block"; r1h.style.display = "none";
+  } else {
+    t1h.style.background = "var(--info)"; t1h.style.color = "#000";
+    t1h.style.border = "none";
+    t15.style.background = "var(--card)"; t15.style.color = "var(--muted)";
+    r15.style.display = "none"; r1h.style.display = "block";
+    runOptions1h();
+  }
+}
+
+// ── Fetch Deribit IV for a given expiry ───────────────────────────────────────
+async function fetchDeribitIV(coin){
+  try {
+    // Deribit public API — no auth needed for index and IV data
+    const sym = coin.includes("BTC") ? "btc" : coin.includes("ETH") ? "eth" : "btc";
+    const url = `https://www.deribit.com/api/v2/public/get_index_price?index_name=${sym}_usd`;
+    const res = await fetch(url, { cache:"no-store" });
+    if(!res.ok) throw new Error("Deribit "+res.status);
+    const d = await res.json();
+    const indexPrice = d.result?.index_price ?? null;
+
+    // Also fetch current IV from Deribit volatility index
+    const ivUrl = `https://www.deribit.com/api/v2/public/get_volatility_index_data?currency=${sym.toUpperCase()}&start_timestamp=${Date.now()-3600000}&end_timestamp=${Date.now()}&resolution=3600`;
+    const ivRes = await fetch(ivUrl, { cache:"no-store" });
+    const ivData = await ivRes.json();
+    const ivPoints = ivData.result?.data ?? [];
+    const latestIV = ivPoints.length ? ivPoints[ivPoints.length-1][4] : null; // close value
+
+    return { indexPrice, dvol: latestIV };
+  } catch(e) {
+    console.warn("Deribit IV fetch failed:", e.message);
+    return { indexPrice: null, dvol: null };
+  }
+}
+
+// ── Black-Scholes call/put price estimator ────────────────────────────────────
+// Simplified BS for 1-hour option pricing estimate (educational, not exact)
+function blackScholesPrice(S, K, T, r, sigma, type){
+  // S=spot, K=strike, T=time in years, r=risk-free rate, sigma=IV (decimal), type=call/put
+  const d1 = (Math.log(S/K) + (r + 0.5*sigma*sigma)*T) / (sigma*Math.sqrt(T));
+  const d2 = d1 - sigma*Math.sqrt(T);
+  const N  = x => 0.5*(1+erf(x/Math.SQRT2));
+  if(type === "call") return S*N(d1) - K*Math.exp(-r*T)*N(d2);
+  else                return K*Math.exp(-r*T)*N(-d2) - S*N(-d1);
+}
+
+function erf(x){
+  // Approximation of error function
+  const t = 1/(1+0.3275911*Math.abs(x));
+  const y = 1-t*(0.254829592+t*(-0.284496736+t*(1.421413741+t*(-1.453152027+t*1.061405429))))*Math.exp(-x*x);
+  return x >= 0 ? y : -y;
+}
+
+// ── 1-hour signal analysis ────────────────────────────────────────────────────
+async function runOptions1h(){
+  const product = $("coin").value;
+  const r1h     = $("result1h");
+  r1h.innerHTML = `<div class="card"><span class="spin">⟳</span> Fetching 1-hour signal data…</div>`;
+
+  try {
+    // Fetch candles (1-min for indicators) + blended RTI + Deribit IV in parallel
+    const [candles1m, rtiData, deribitData] = await Promise.all([
+      getCandles(product, 60),
+      getBlendedRTI(product),
+      fetchDeribitIV(product)
+    ]);
+
+    const price  = rtiData.blended;
+    const closes = candles1m.slice(-60).map(c=>c.close); // 60 candles = 1 hour
+    const closes30 = candles1m.slice(-30).map(c=>c.close);
+
+    // ── Indicators (same as 15m tool but for 1-hour direction) ──────────────
+    const ema9   = EMA(closes30, 9);
+    const ema21  = EMA(closes30, 21);
+    const ema50  = EMA(closes, 50);
+    const rsi14  = RSI(closes30);
+    const vwap   = VWAP(candles1m.slice(-60));
+    const macd   = MACD(closes);
+    const atr1h  = ATR(candles1m);
+
+    const trend5m  = price - closes[closes.length - 5];
+    const trend15m = price - closes[closes.length - 15];
+    const trend30m = price - closes[closes.length - 30];
+    const trend60m = candles1m.length >= 60 ? price - closes[0] : 0;
+
+    // ── 5-indicator checklist for 1-hour direction ───────────────────────────
+    const checks = {
+      ema:     { bull: ema9 > ema21,   bear: ema9 < ema21,   label: "EMA 9 > 21",       weight: 2 },
+      vwap:    { bull: price > vwap,   bear: price < vwap,   label: "Price vs VWAP",    weight: 2 },
+      trend:   { bull: trend15m > 0 && trend30m > 0, bear: trend15m < 0 && trend30m < 0, label: "15m+30m Trend", weight: 2 },
+      rsi:     { bull: rsi14 > 50 && rsi14 < 70, bear: rsi14 < 50 && rsi14 > 30, label: "RSI 50–70", weight: 1 },
+      macd:    { bull: macd?.histogram > 0, bear: macd?.histogram < 0, label: "MACD Histogram", weight: 1 },
+      ema50:   { bull: price > ema50,  bear: price < ema50,  label: "Price vs EMA50",   weight: 2 },
+    };
+
+    let bullScore = 0, bearScore = 0, totalWeight = 0;
+    Object.values(checks).forEach(c => {
+      totalWeight += c.weight;
+      if(c.bull) bullScore += c.weight;
+      else if(c.bear) bearScore += c.weight;
+    });
+
+    const bullPct  = Math.round(bullScore / totalWeight * 100);
+    const bearPct  = Math.round(bearScore / totalWeight * 100);
+    const neutral  = totalWeight - bullScore - bearScore;
+    const direction = bullScore > bearScore ? "CALL" : bearScore > bullScore ? "PUT" : "NEUTRAL";
+    const dirColor  = direction === "CALL" ? "var(--yes)" : direction === "PUT" ? "var(--no)" : "var(--muted)";
+    const dirBg     = direction === "CALL" ? "#052e16" : direction === "PUT" ? "#450a0a" : "#1a1a1a";
+
+    // Signal strength
+    const maxPossible = totalWeight;
+    const winningScore = Math.max(bullScore, bearScore);
+    const strengthPct = Math.round(winningScore / maxPossible * 100);
+    const strength = strengthPct >= 80 ? "STRONG" : strengthPct >= 60 ? "MODERATE" : "WEAK";
+    const strengthColor = strengthPct >= 80 ? "var(--yes)" : strengthPct >= 60 ? "var(--info)" : "var(--warn)";
+
+    // ── IV check ─────────────────────────────────────────────────────────────
+    const dvol = deribitData.dvol;
+    let ivStatus = "unavailable", ivColor = "var(--muted)", ivNote = "";
+    if(dvol !== null){
+      if(dvol < 40)       { ivStatus = "LOW — cheap options ✓";    ivColor = "var(--yes)"; ivNote = "Good time to buy"; }
+      else if(dvol < 60)  { ivStatus = "NORMAL — fair price ✓";    ivColor = "var(--info)"; ivNote = "Normal cost"; }
+      else if(dvol < 80)  { ivStatus = "HIGH — expensive ⚠";       ivColor = "var(--warn)"; ivNote = "Options overpriced, consider waiting"; }
+      else                { ivStatus = "VERY HIGH — avoid ✗";       ivColor = "var(--no)"; ivNote = "Options extremely expensive, skip"; }
+    }
+
+    // ── Strike price calculator ───────────────────────────────────────────────
+    // Use ATR-based approach: 1-hour expected move ≈ ATR × sqrt(60) min / sqrt(1440) day
+    const hourlyMove = atr1h * Math.sqrt(60) * 0.5; // estimated 1-sigma move in 1 hour
+    const T = 1/8760; // 1 hour in years (8760 hours/year)
+    const sigma = dvol ? dvol/100 : 0.60; // use DVOL or default 60%
+    const rfRate = 0.05; // 5% risk-free rate
+
+    // Three strike options
+    const strikeConservative = Math.round((price * (direction==="CALL" ? 1.003 : 0.997)) / 50) * 50;
+    const strikeBalanced     = Math.round((price * (direction==="CALL" ? 1.005 : 0.995)) / 50) * 50;
+    const strikeAggressive   = Math.round((price * (direction==="CALL" ? 1.010 : 0.990)) / 50) * 50;
+
+    // Black-Scholes estimated premium for each strike
+    const type = direction === "CALL" ? "call" : "put";
+    const premConserv = blackScholesPrice(price, strikeConservative, T, rfRate, sigma, type);
+    const premBal     = blackScholesPrice(price, strikeBalanced,     T, rfRate, sigma, type);
+    const premAgg     = blackScholesPrice(price, strikeAggressive,   T, rfRate, sigma, type);
+
+    // Payout if BTC moves 1× ATR in your direction
+    const targetPrice1x = direction === "CALL" ? price + hourlyMove : price - hourlyMove;
+    const targetPrice2x = direction === "CALL" ? price + hourlyMove*2 : price - hourlyMove*2;
+
+    function optionPayoutAtPrice(S_final, K, premium, optType){
+      const intrinsic = optType === "call" ? Math.max(0, S_final-K) : Math.max(0, K-S_final);
+      return { payout: intrinsic, profit: intrinsic - premium, roi: ((intrinsic-premium)/premium*100) };
+    }
+
+    // Recommended strike based on signal strength
+    const recStrike  = strength === "STRONG"   ? strikeConservative
+                     : strength === "MODERATE" ? strikeBalanced
+                     : strikeBalanced;
+    const recPremium = strength === "STRONG"   ? premConserv
+                     : strength === "MODERATE" ? premBal
+                     : premBal;
+    const recPayout1x = optionPayoutAtPrice(targetPrice1x, recStrike, recPremium, type);
+    const recPayout2x = optionPayoutAtPrice(targetPrice2x, recStrike, recPremium, type);
+
+    // Suggested budget
+    const suggestedBudget = strengthPct >= 80 ? 20 : strengthPct >= 60 ? 10 : 5;
+
+    // ── Render 1-hour options signal ─────────────────────────────────────────
+    r1h.innerHTML = `
+    <div>
+      <!-- DIRECTION SIGNAL -->
+      <div class="card" style="background:${dirBg};border:2px solid ${dirColor};padding:8px 10px;margin-bottom:5px;">
+        <div style="font-size:20px;font-weight:800;color:${dirColor};line-height:1;">${direction}</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:2px;">
+          1-hour direction signal · ${strength} (${strengthPct}%)
+        </div>
+        <div style="display:flex;gap:5px;margin-top:5px;flex-wrap:wrap;">
+          <span class="chip chip-${direction==='CALL'?'yes':direction==='PUT'?'no':'muted'}">
+            ${direction==='CALL'?'▲ CALL':'▼ PUT'} ${strength}
+          </span>
+          <span class="chip chip-muted">Bull ${bullPct}%</span>
+          <span class="chip chip-muted">Bear ${bearPct}%</span>
+          <span class="chip" style="background:#0c2a4a;color:${ivColor};border:1px solid ${ivColor};">
+            IV: ${dvol ? dvol.toFixed(0)+"%" : "—"}
+          </span>
+        </div>
+      </div>
+
+      <!-- IV STATUS -->
+      <div class="card" style="padding:6px 9px;margin-bottom:5px;border:1px solid ${ivColor};">
+        <div class="sec" style="margin-top:0;">📊 Implied Volatility (DVOL)</div>
+        <div style="font-size:12px;font-weight:700;color:${ivColor};">${ivStatus}</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:2px;">${ivNote}${dvol ? " · DVOL: "+dvol.toFixed(1)+"%" : ""}</div>
+        <div style="font-size:8.5px;color:var(--muted);margin-top:2px;">
+          Rule: DVOL &lt;40 = buy options cheap · 40–60 = normal · &gt;60 = expensive · &gt;80 = avoid
+        </div>
+      </div>
+
+      <!-- 5-INDICATOR CHECKLIST -->
+      <div class="card" style="padding:6px 9px;margin-bottom:5px;">
+        <div class="sec" style="margin-top:0;">✅ 1-Hour Signal Checklist</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px;">
+          ${Object.entries(checks).map(([k,c])=>{
+            const state = c.bull?"BULL":c.bear?"BEAR":"NEUTRAL";
+            const col   = c.bull?"var(--yes)":c.bear?"var(--no)":"var(--muted)";
+            const icon  = c.bull?"▲":c.bear?"▼":"—";
+            return `<div style="font-size:9.5px;padding:2px 0;border-bottom:1px solid #1a1a1a;display:flex;justify-content:space-between;">
+              <span style="color:var(--muted);">${c.label}</span>
+              <span style="color:${col};font-weight:700;">${icon} ${state}</span>
+            </div>`;
+          }).join("")}
+        </div>
+        <div style="font-size:8px;color:var(--muted);margin-top:4px;">
+          Trend data: 5m ${trend5m>=0?"+":""}${trend5m.toFixed(0)} · 
+          15m ${trend15m>=0?"+":""}${trend15m.toFixed(0)} · 
+          30m ${trend30m>=0?"+":""}${trend30m.toFixed(0)} · 
+          60m ${trend60m>=0?"+":""}${trend60m.toFixed(0)}
+        </div>
+      </div>
+
+      <!-- STRIKE CALCULATOR -->
+      <div class="card" style="padding:6px 9px;margin-bottom:5px;">
+        <div class="sec" style="margin-top:0;">🎯 Strike Price Calculator</div>
+        <div style="font-size:8.5px;color:var(--muted);margin-bottom:5px;">
+          BTC @ $${price.toFixed(0)} · Est. 1-hour move: ±$${hourlyMove.toFixed(0)} · 
+          1× target: $${targetPrice1x.toFixed(0)}
+        </div>
+
+        <!-- Strike comparison table -->
+        <div style="font-size:9px;font-weight:700;color:var(--muted);margin-bottom:3px;text-transform:uppercase;">
+          Estimated premiums (Black-Scholes, indicative only)
+        </div>
+        ${[
+          {label:"Conservative", strike: strikeConservative, prem: premConserv, rec: strength==="STRONG"},
+          {label:"Balanced",     strike: strikeBalanced,     prem: premBal,     rec: strength==="MODERATE"},
+          {label:"Aggressive",   strike: strikeAggressive,   prem: premAgg,     rec: false},
+        ].map(s=>{
+          const p1 = optionPayoutAtPrice(targetPrice1x, s.strike, s.prem, type);
+          const dist = Math.abs(price - s.strike);
+          const distPct = (dist/price*100).toFixed(2);
+          return `<div style="background:${s.rec?"#0a1e10":"#111"};border:1px solid ${s.rec?"var(--yes)":"var(--border)"};
+            border-radius:5px;padding:4px 7px;margin-bottom:3px;">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;">
+              <span style="font-size:10px;font-weight:700;color:${s.rec?"var(--yes)":"var(--text)"}">
+                ${s.rec?"★ ":""}${s.label}
+              </span>
+              <span style="font-size:9px;color:var(--muted);">${distPct}% from current</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;margin-top:3px;">
+              <div>
+                <div style="font-size:8px;color:var(--muted);">Strike</div>
+                <div style="font-size:11px;font-weight:700;">$${s.strike.toLocaleString()}</div>
+              </div>
+              <div>
+                <div style="font-size:8px;color:var(--muted);">Est. premium</div>
+                <div style="font-size:11px;font-weight:700;color:var(--warn);">$${s.prem.toFixed(0)}</div>
+              </div>
+              <div>
+                <div style="font-size:8px;color:var(--muted);">If 1× move</div>
+                <div style="font-size:11px;font-weight:700;color:${p1.profit>0?"var(--yes)":"var(--no)"};">
+                  ${p1.profit>0?"+":""}$${p1.profit.toFixed(0)}
+                </div>
+              </div>
+            </div>
+          </div>`;
+        }).join("")}
+      </div>
+
+      <!-- RECOMMENDED TRADE -->
+      <div class="card" style="padding:6px 9px;margin-bottom:5px;background:${dirBg};border:1.5px solid ${dirColor};">
+        <div class="sec" style="margin-top:0;color:${dirColor};">💰 Recommended Trade</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:5px;">
+          <div>
+            <div style="font-size:8px;color:var(--muted);">Suggested budget</div>
+            <div style="font-size:18px;font-weight:800;color:${dirColor};">$${suggestedBudget}</div>
+            <div style="font-size:8px;color:var(--muted);">${strengthPct}% strength → $${suggestedBudget}</div>
+          </div>
+          <div>
+            <div style="font-size:8px;color:var(--muted);">Strike (${strength==="STRONG"?"Conservative":"Balanced"})</div>
+            <div style="font-size:18px;font-weight:800;">$${recStrike.toLocaleString()}</div>
+            <div style="font-size:8px;color:var(--muted);">Est. premium ~$${recPremium.toFixed(0)}</div>
+          </div>
+        </div>
+        <div style="background:#0a0a0a;border-radius:5px;padding:5px 7px;margin-bottom:4px;">
+          <div style="font-size:8.5px;color:var(--muted);margin-bottom:3px;">If BTC moves to $${targetPrice1x.toFixed(0)} (1× ATR):</div>
+          <div style="font-size:12px;font-weight:700;color:${recPayout1x.profit>0?"var(--yes)":"var(--no)"};">
+            Option worth $${recPayout1x.payout.toFixed(0)} · profit ${recPayout1x.profit>0?"+":""}$${recPayout1x.profit.toFixed(0)} (${recPayout1x.roi.toFixed(0)}% ROI)
+          </div>
+          <div style="font-size:8.5px;color:var(--muted);margin-top:2px;">If BTC moves to $${targetPrice2x.toFixed(0)} (2× ATR):
+            <span style="color:${recPayout2x.profit>0?"var(--yes)":"var(--muted)"};">
+              profit ${recPayout2x.profit>0?"+":""}$${recPayout2x.profit.toFixed(0)} (${recPayout2x.roi.toFixed(0)}% ROI)
+            </span>
+          </div>
+        </div>
+        <div style="font-size:8.5px;line-height:1.5;color:var(--muted);">
+          <b style="color:var(--warn);">⚡ Exit rule:</b> Sell when option value hits 2× your premium paid. 
+          Stop loss: sell if option loses 50% of value.<br>
+          Never hold to expiry unless signal stays strong at 45-min mark.
+        </div>
+      </div>
+
+      <!-- PLATFORM GUIDE -->
+      <div class="card" style="padding:6px 9px;margin-bottom:5px;">
+        <div class="sec" style="margin-top:0;">🏦 Where to Trade</div>
+        <div style="font-size:9.5px;color:var(--warn);margin-bottom:4px;font-weight:700;">
+          ⚠ Coinbase does NOT offer BTC options. Use one of these:
+        </div>
+        ${[
+          {name:"Bybit",    url:"bybit.com",   note:"Easiest UI for beginners · Good mobile app · 1h expiry available",      rec:true},
+          {name:"OKX",      url:"okx.com",     note:"Simple interface · Good for small amounts · Mobile app",                  rec:true},
+          {name:"Deribit",  url:"deribit.com", note:"Most liquid · Best for accurate prices · More complex UI",               rec:false},
+        ].map(p=>`
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #1a1a1a;">
+            <div>
+              <span style="font-size:10px;font-weight:700;color:${p.rec?"var(--info)":"var(--text)"};">${p.rec?"★ ":""}${p.name}</span>
+              <div style="font-size:8px;color:var(--muted);">${p.note}</div>
+            </div>
+            <span style="font-size:8px;color:var(--muted);">${p.url}</span>
+          </div>`).join("")}
+        <div style="font-size:8px;color:var(--muted);margin-top:4px;border-top:1px solid #1a1a1a;padding-top:4px;">
+          On Coinbase: use <b style="color:var(--info)">Perpetual Futures (Advanced Trade)</b> for leveraged BTC direction bets instead.
+          Nano BTC = 0.01 BTC per contract. Similar to options but no time decay.
+        </div>
+      </div>
+
+      <div style="font-size:8.5px;color:var(--muted);padding:0 0 8px;line-height:1.5;">
+        ⚠ Estimated premiums from Black-Scholes are INDICATIVE only. Actual market prices may differ.
+        Always check live premium on your chosen platform before trading.<br>
+        Rule: Only buy options when strength ≥ 60% AND DVOL &lt; 60.
+      </div>
+    </div>`;
+
+  } catch(e){
+    console.error(e);
+    r1h.innerHTML = `<div class="card" style="color:var(--no)">Error: ${e.message}</div>`;
   }
 }
 
