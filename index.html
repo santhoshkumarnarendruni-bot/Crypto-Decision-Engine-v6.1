@@ -91,6 +91,13 @@
   <option value="HYPE-USD">HYPE</option>
 </select>
 
+<!-- RTI Mode selector -->
+<select id="rtiMode" title="Price source for signal calculation">
+  <option value="auto" selected>RTI: Auto (Coinbase if spread ≥$30)</option>
+  <option value="coinbase">RTI: Coinbase only ← recommended</option>
+  <option value="blend">RTI: Always blend CB+Kraken+Bitstamp</option>
+</select>
+
 <!-- Target -->
 <input id="target" type="number" step="0.0001" placeholder="⟳ Fetching target from Kalshi…" readonly style="opacity:0.6;">
 
@@ -1067,9 +1074,10 @@ function detectTraps({
 }
 
 function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr,
-                   p5, p10, p15, latestAvg, aggrMode }){
+                   p5, p10, p15, latestAvg, aggrMode, maxSpread=0 }){
 
-  const timeLeft = getTimeLeftMin();
+  const timeLeft      = getTimeLeftMin();
+  const spreadBlocked = maxSpread >= 50; // block BET if exchanges disagree by ≥ $50
   const closes   = candles1m.map(c=>c.close);
   const recentCandles = candles1m.slice(-30);
   const latest   = candles1m[candles1m.length-1];
@@ -1224,6 +1232,15 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   }
   const marketNo = 1 - marketYes;
 
+  // ── CF Benchmarks gap penalty ──────────────────────────────────
+  // Kalshi settles on CF Benchmarks (weighted avg of CB+Kraken+Bitstamp).
+  // Our RTI is a simple average — can differ by $10–50 from real settlement.
+  // When we're close to target (within 1 ATR), this gap matters a lot.
+  if(Math.abs(price - target) < atr){
+    confidence -= 10;
+    warnings.push(`Price within 1 ATR of target ($${Math.abs(price-target).toFixed(0)} gap) — CF Benchmarks may differ from RTI`);
+  }
+
   // ── Confidence penalties ─────────────────────────────────────
   if(volatilityHigh)     { confidence-=12; warnings.push("High volatility"); }
   if(volatilityVeryHigh) { confidence-=20; warnings.push("Very high volatility — consider skipping"); }
@@ -1231,7 +1248,8 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   if(avgDistance<vol)    { confidence-=15; warnings.push("Projected avg extremely close to target"); }
   if((trend5>0&&trend10<0)||(trend5<0&&trend10>0)){ confidence-=15; warnings.push("Mixed 5m/10m trend — unstable direction"); }
   if(timeLeft>6&&volatilityHigh){ confidence-=8; warnings.push("Early stage + high volatility"); }
-  if(timeLeft<=3){ confidence+=8; reasons.push("< 3min: live price is now dominant"); }
+  // NOTE: removed fake +8 confidence at <3 min — time passing is NOT a signal.
+  // If anything, <3 min is MORE risky (settlement dominated by last few seconds).
 
   yes = Math.max(0.05, Math.min(0.95, yes));
   const no = 1 - yes;
@@ -1371,7 +1389,10 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     else { rawDecision="WATCH ONLY"; entryTiming="FORMING — WAIT 6–3 MIN"; signalReason=coreYes?"YES forming, not strong enough yet":coreNo?"NO forming, not strong enough yet":"No clear direction yet"; }
   } else if(idealWin){
     // ALL 3 STARS MUST AGREE — if any star contradicts, it is a SKIP
-    if(!threeStarsYes && !threeStarsNo){
+    if(spreadBlocked){
+      rawDecision="SKIP"; entryTiming="HIGH SPREAD";
+      signalReason=`Exchange spread $${maxSpread.toFixed(0)} ≥ $50 — prices unreliable, cannot trust signal`;
+    } else if(!threeStarsYes && !threeStarsNo){
       rawDecision="SKIP"; entryTiming="3 STARS SPLIT";
       signalReason="Price, Candle Avg, and Projected don't all agree — too risky to bet";
     } else if(targetMagnetZone){
@@ -1641,7 +1662,13 @@ async function runOnce(){
 
     if(candles1m.length<20) throw new Error("Not enough candle data");
 
-    const price   = rtiData.blended;
+    // RTI price source based on user selection
+    const rtiMode2 = ($("rtiMode")?.value) || "auto";
+    const price    = (rtiMode2 === "coinbase" && rtiData.cbPrice)
+                   ? rtiData.cbPrice
+                   : (rtiMode2 === "auto" && rtiData.maxSpread >= 30 && rtiData.cbPrice)
+                   ? rtiData.cbPrice   // auto-switch when spread is high
+                   : rtiData.blended;
     const closes  = candles1m.slice(-30).map(c=>c.close);
     const rsi     = RSI(closes);
     const vol     = VOL(closes);
@@ -1710,7 +1737,8 @@ async function runOnce(){
     }
 
     const r = analyze({ product, price, target, marketInput: effectiveMarketInput,
-                        candles1m, rsi, vol, atr, p5, p10, p15, latestAvg, aggrMode });
+                        candles1m, rsi, vol, atr, p5, p10, p15, latestAvg, aggrMode,
+                        maxSpread: rtiData.maxSpread ?? 0 });
 
     lastRefreshTime = new Date();
     // Store kalshiLive globally so updatePayoutPreview can access freshest prices
@@ -1736,7 +1764,10 @@ async function runOnce(){
 function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
   const macdText  = r.macdBullish===true?"▲ Bullish":r.macdBullish===false?"▼ Bearish":"—";
   const macdCls   = r.macdBullish===true?"yes":r.macdBullish===false?"no":"muted";
-  const spreadOk  = rti.maxSpread <= price*0.002;
+  // Spread gate: if exchanges disagree by > $50, price is unreliable
+  // At $80k BTC: 0.002 × 80000 = $160 — way too loose
+  // Using hard $50 cap instead: spread > $50 = block BET
+  const spreadOk  = rti.maxSpread < 50;
   const trendArrow= (v)=>v>0?`<span class="yes">▲</span>`:`<span class="no">▼</span>`;
 
   // Signal color
@@ -2146,7 +2177,12 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
           ${(price-target)>=0?"+":""}${(price-target).toFixed(2)}
           <span style="font-size:8px;font-weight:400;color:var(--muted);">vs target</span>
         </div>
-        <div style="font-size:9px;color:${spreadOk?"var(--yes)":"var(--warn)"};margin-top:1px;">Spread $${rti.maxSpread?.toFixed(2)??"—"}</div>
+        <div style="font-size:9px;margin-top:1px;font-weight:${rti.maxSpread>=50?"700":"400"};
+          color:${rti.maxSpread>=50?"var(--no)":rti.maxSpread>=20?"var(--warn)":"var(--yes)"};">
+          ${rti.maxSpread>=50?"🚫":""}Spread $${rti.maxSpread?.toFixed(2)??"—"}
+          ${rti.maxSpread>=50?" — BET BLOCKED":""}
+        </div>
+        ${rti.count>1&&rti.maxSpread>=50?`<div style="font-size:8px;color:var(--no);">Use Coinbase only when spread is high</div>`:""}
 
       </div>
 
