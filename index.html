@@ -1,7 +1,10 @@
-<!DOCTYPE html>
+<!DOCTYPE html><!-- v1778238389 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Crypto Decision Engine v6.2</title>
 <style>
@@ -625,7 +628,33 @@ async function fetchKalshiTargetViaCorsProxy(product){
 }
 
 async function getCoinbasePrice(product){
-  const d = await fetchJson(`https://api.exchange.coinbase.com/products/${product}/ticker`);
+  // Use 3 sources in priority order for most accurate real-time price:
+  // 1. Coinbase Advanced Trade websocket-compatible REST ticker (most accurate, real-time)
+  // 2. Coinbase public spot price (backup)
+  // 3. Coinbase Exchange last trade (slowest, can lag by minutes — was the bug)
+  const pair = product; // e.g. "BTC-USD"
+
+  // Source 1: Coinbase Advanced Trade best bid/ask ticker
+  // Returns real-time best_bid + best_ask (not last trade)
+  try {
+    const d = await fetchJson(`https://api.coinbase.com/api/v3/brokerage/best_bid_ask?product_ids=${pair}`);
+    const pricebook = d?.pricebooks?.[0];
+    if(pricebook?.best_bid && pricebook?.best_ask){
+      const bid = Number(pricebook.best_bid);
+      const ask = Number(pricebook.best_ask);
+      if(!isNaN(bid) && bid > 0) return (bid + ask) / 2;
+    }
+  } catch(e){ /* fall through */ }
+
+  // Source 2: Coinbase spot price (accurate, simple)
+  try {
+    const d = await fetchJson(`https://api.coinbase.com/v2/prices/${pair}/spot`);
+    const sp = Number(d?.data?.amount);
+    if(!isNaN(sp) && sp > 0) return sp;
+  } catch(e){ /* fall through */ }
+
+  // Source 3: Coinbase Exchange ticker (last trade — can lag, was the original bug)
+  const d = await fetchJson(`https://api.exchange.coinbase.com/products/${pair}/ticker`);
   if(!d.price) throw new Error("Coinbase ticker unavailable");
   return Number(d.price);
 }
@@ -653,8 +682,23 @@ async function getBitstampPrice(pair){
 }
 
 async function getBlendedRTI(product){
-  // Fetch all 3 in parallel; failed ones return null and are excluded
-  const map = COIN_MAP[product] || {};
+  const map      = COIN_MAP[product] || {};
+  const rtiMode2 = $("rtiMode")?.value ?? "auto";
+
+  // Coinbase-only mode: skip Kraken/Bitstamp entirely
+  if(rtiMode2 === "coinbase"){
+    const cbPrice = await getCoinbasePrice(product);
+    if(!cbPrice) throw new Error("No price data available");
+    return {
+      blended: cbPrice, cbPrice,
+      krakenPrice: null, bitstampPrice: null,
+      sources: ["Coinbase"],
+      maxSpread: 0,   // single source = zero spread
+      count: 1,
+    };
+  }
+
+  // Blend mode: fetch all 3 in parallel
   const [cbPrice, krakenPrice, bitstampPrice] = await Promise.all([
     getCoinbasePrice(product),
     getKrakenPrice(map.kraken),
@@ -664,12 +708,23 @@ async function getBlendedRTI(product){
   const prices = [cbPrice, krakenPrice, bitstampPrice].filter(p=>p!==null&&!isNaN(p)&&p>0);
   if(!prices.length) throw new Error("No price data available");
 
-  // Simple average of available mid-prices — good approximation of RTI
-  const blended = prices.reduce((a,b)=>a+b,0)/prices.length;
-  const sources = ["Coinbase", krakenPrice?"Kraken":null, bitstampPrice?"Bitstamp":null].filter(Boolean);
-  const maxSpread = Math.max(...prices)-Math.min(...prices);
+  const rawSpread = prices.length > 1 ? Math.max(...prices) - Math.min(...prices) : 0;
+  const sources   = ["Coinbase", krakenPrice?"Kraken":null, bitstampPrice?"Bitstamp":null].filter(Boolean);
 
-  return { blended, cbPrice, krakenPrice, bitstampPrice, sources, maxSpread, count:prices.length };
+  // Auto mode: if spread >= $30, fall back to Coinbase only
+  if(rtiMode2 === "auto" && rawSpread >= 30 && cbPrice){
+    return {
+      blended: cbPrice, cbPrice,
+      krakenPrice, bitstampPrice,
+      sources: ["Coinbase", "(Kraken/Bitstamp excluded — high spread)"],
+      maxSpread: rawSpread,   // keep real spread so UI can show warning
+      count: 1,
+      autoFallback: true,
+    };
+  }
+
+  const blended = prices.reduce((a,b)=>a+b,0) / prices.length;
+  return { blended, cbPrice, krakenPrice, bitstampPrice, sources, maxSpread: rawSpread, count: prices.length };
 }
 
 async function getCandles(product, granularity=60){
@@ -1662,13 +1717,9 @@ async function runOnce(){
 
     if(candles1m.length<20) throw new Error("Not enough candle data");
 
-    // RTI price source based on user selection
-    const rtiMode2 = ($("rtiMode")?.value) || "auto";
-    const price    = (rtiMode2 === "coinbase" && rtiData.cbPrice)
-                   ? rtiData.cbPrice
-                   : (rtiMode2 === "auto" && rtiData.maxSpread >= 30 && rtiData.cbPrice)
-                   ? rtiData.cbPrice   // auto-switch when spread is high
-                   : rtiData.blended;
+    // Price is already correctly set by getBlendedRTI based on rtiMode selector
+    // (Coinbase-only returns blended=cbPrice, auto falls back to cbPrice when spread>=30)
+    const price = rtiData.blended;
     const closes  = candles1m.slice(-30).map(c=>c.close);
     const rsi     = RSI(closes);
     const vol     = VOL(closes);
@@ -2169,7 +2220,11 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
 
       <!-- RTI Price -->
       <div class="card" style="padding:6px 8px;">
-        <div style="font-size:9px;color:var(--muted);">RTI (${rti.sources?.join("+") ?? "CB"})</div>
+        <div style="font-size:9px;color:var(--muted);">
+          ${rti.count===1 && !rti.autoFallback ? "Coinbase" :
+            rti.autoFallback ? "Coinbase (auto — spread high)" :
+            "RTI ("+rti.sources?.join("+")+")"}
+        </div>
         <div style="font-size:17px;font-weight:800;color:${price>target?"var(--yes)":"var(--no)"};">${price.toFixed(2)}</div>
         <div style="font-size:9px;color:var(--muted);margin-top:1px;">Target: <span style="color:var(--text);font-weight:600;">${target.toFixed(2)}</span></div>
         <!-- Diff = RTI - Target, green if positive, red if negative -->
@@ -2177,12 +2232,17 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
           ${(price-target)>=0?"+":""}${(price-target).toFixed(2)}
           <span style="font-size:8px;font-weight:400;color:var(--muted);">vs target</span>
         </div>
-        <div style="font-size:9px;margin-top:1px;font-weight:${rti.maxSpread>=50?"700":"400"};
-          color:${rti.maxSpread>=50?"var(--no)":rti.maxSpread>=20?"var(--warn)":"var(--yes)"};">
-          ${rti.maxSpread>=50?"🚫":""}Spread $${rti.maxSpread?.toFixed(2)??"—"}
-          ${rti.maxSpread>=50?" — BET BLOCKED":""}
-        </div>
-        ${rti.count>1&&rti.maxSpread>=50?`<div style="font-size:8px;color:var(--no);">Use Coinbase only when spread is high</div>`:""}
+        ${rti.count===1 && !rti.autoFallback
+          // Coinbase-only: no spread to show
+          ? `<div style="font-size:9px;color:var(--yes);margin-top:1px;">✓ Single source — no spread</div>`
+          // Multi-source or auto-fallback: show spread with warning
+          : `<div style="font-size:9px;margin-top:1px;font-weight:${rti.maxSpread>=50?"700":"400"};
+              color:${rti.maxSpread>=50?"var(--no)":rti.maxSpread>=20?"var(--warn)":"var(--yes)"};">
+              ${rti.maxSpread>=50?"🚫":""}Spread \$${rti.maxSpread?.toFixed(2)??"—"}
+              ${rti.maxSpread>=50?" — switch to Coinbase-only":""}
+              ${rti.autoFallback?" (using Coinbase price)":""}
+            </div>`
+        }
 
       </div>
 
