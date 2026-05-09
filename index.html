@@ -1154,7 +1154,11 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
                    p5, p10, p15, latestAvg, aggrMode, maxSpread=0 }){
 
   const timeLeft      = getTimeLeftMin();
-  const spreadBlocked = maxSpread >= 50; // block BET if exchanges disagree by ≥ $50
+  // Spread block: use percentage of price so it works for any coin
+  // $50 on BTC ($80k) = 0.063% — equivalent on XRP ($1.42) = $0.00089
+  // Use 0.07% of price as the threshold
+  const spreadPct     = price > 0 ? maxSpread / price : 0;
+  const spreadBlocked = spreadPct >= 0.0007; // 0.07% — works for BTC, XRP, ETH, SOL
   const closes   = candles1m.map(c=>c.close);
   const recentCandles = candles1m.slice(-30);
   const latest   = candles1m[candles1m.length-1];
@@ -1225,7 +1229,9 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   const rawProj  = baseProj + momentumNudge;
 
   // Safety clamp: projected avg can never stray more than 3 ATR from live price
-  const maxDrift    = atr * 3;
+  // maxDrift: cap projected avg drift at 3× ATR but never more than 0.5% of price
+  // This prevents XRP projected avg from drifting nonsensically
+  const maxDrift    = Math.min(atr * 3, price * 0.005);
   const projectedAvg = Math.max(price - maxDrift, Math.min(price + maxDrift, rawProj));
 
   // ── Cushion ──────────────────────────────────────────────────
@@ -1313,9 +1319,12 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   // Kalshi settles on CF Benchmarks (weighted avg of CB+Kraken+Bitstamp).
   // Our RTI is a simple average — can differ by $10–50 from real settlement.
   // When we're close to target (within 1 ATR), this gap matters a lot.
-  if(Math.abs(price - target) < atr){
+  // CF Benchmarks gap penalty — use % of price so it works for any coin
+  // Flag when gap is < 1 ATR AND < 0.05% of price
+  const gapPct = Math.abs(price - target) / price;
+  if(Math.abs(price - target) < atr && gapPct < 0.0005){
     confidence -= 10;
-    warnings.push(`Price within 1 ATR of target ($${Math.abs(price-target).toFixed(0)} gap) — CF Benchmarks may differ from RTI`);
+    warnings.push(`Price within 1 ATR of target (${(gapPct*100).toFixed(4)}% gap) — CF Benchmarks may differ from RTI`);
   }
 
   // ── Confidence penalties ─────────────────────────────────────
@@ -1478,13 +1487,15 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
 
     if(spreadBlocked){
       rawDecision="SKIP"; entryTiming="HIGH SPREAD";
-      signalReason=`Exchange spread $${maxSpread.toFixed(0)} ≥ $50 — prices unreliable, cannot trust signal`;
+      signalReason=`Exchange spread ${(spreadPct*100).toFixed(3)}% of price — exchanges disagree, prices unreliable. Use Coinbase-only mode.`;
     } else if(kalshiPriceTooHigh){
       rawDecision="SKIP"; entryTiming="POOR ODDS";
       signalReason=`Kalshi ${kalshiPriceSide} at ${kalshiPriceValue.toFixed(0)}¢ — market already priced this in. Win only $${((1-kalshiPriceValue/100)*10).toFixed(2)} on $10 bet. One loss wipes ${Math.round(kalshiPriceValue/(100-kalshiPriceValue))} wins. Wait for 35–65¢ range.`;
-    } else if(atr < 50 && timeLeft < 3){
+    } else if((atr / price) < 0.0006 && timeLeft < 3){
+      // ATR as % of price < 0.06% = very quiet market regardless of coin price
+      // BTC: 0.0006 × 80000 = $48  XRP: 0.0006 × 1.42 = $0.00085
       rawDecision="SKIP"; entryTiming="LOW ATR + LATE";
-      signalReason=`ATR $${atr.toFixed(0)} with ${timeLeft.toFixed(1)} min left — one candle can flip result. Need ATR ≥ $50 or more time.`;
+      signalReason=`ATR ${(atr/price*100).toFixed(3)}% of price with ${timeLeft.toFixed(1)} min left — market too quiet, one candle can flip result.`;
     } else if(!threeStarsYes && !threeStarsNo){
       rawDecision="SKIP"; entryTiming="3 STARS SPLIT";
       signalReason="Price, Candle Avg, and Projected don't all agree — too risky to bet";
@@ -1856,7 +1867,8 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
   // Spread gate: if exchanges disagree by > $50, price is unreliable
   // At $80k BTC: 0.002 × 80000 = $160 — way too loose
   // Using hard $50 cap instead: spread > $50 = block BET
-  const spreadOk  = rti.maxSpread < 50;
+  // Spread OK: percentage-based threshold (0.07% of price)
+  const spreadOk  = rti.maxSpread / (price || 1) < 0.0007;
   const trendArrow= (v)=>v>0?`<span class="yes">▲</span>`:`<span class="no">▼</span>`;
 
   // Signal color
@@ -2303,8 +2315,8 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
           // Multi-source or auto-fallback: show spread with warning
           : `<div style="font-size:9px;margin-top:1px;font-weight:${rti.maxSpread>=50?"700":"400"};
               color:${rti.maxSpread>=50?"var(--no)":rti.maxSpread>=20?"var(--warn)":"var(--yes)"};">
-              ${rti.maxSpread>=50?"🚫":""}Spread \$${rti.maxSpread?.toFixed(2)??"—"}
-              ${rti.maxSpread>=50?" — switch to Coinbase-only":""}
+              ${!spreadOk?"🚫":""}Spread \$${rti.maxSpread?.toFixed(4)??"—"} (${(rti.maxSpread/price*100).toFixed(3)}%)
+              ${!spreadOk?" — switch to Coinbase-only":""}
               ${rti.autoFallback?" (using Coinbase price)":""}
             </div>`
         }
