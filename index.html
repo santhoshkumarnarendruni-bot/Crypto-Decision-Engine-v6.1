@@ -102,7 +102,7 @@
 </select>
 
 <!-- Target -->
-<input id="target" type="number" step="0.0001" placeholder="⟳ Fetching target from Kalshi…" readonly style="opacity:0.6;">
+<input id="target" type="number" step="0.00001" placeholder="⟳ Fetching target from Kalshi…" readonly style="opacity:0.6;">
 
 <!-- Market YES prob -->
 <input id="market" type="number" step="0.01" min="0" max="1"
@@ -389,6 +389,28 @@
 <script>
 // ─── Utils ────────────────────────────────────────────────────────────────────
 function $(id){ return document.getElementById(id); }
+
+// Smart price formatter — uses enough decimals based on price magnitude
+// BTC ($80,000): 2 decimals → $80,210.56
+// ETH ($2,500):  2 decimals → $2,501.34
+// SOL ($150):    3 decimals → $150.234
+// XRP ($1.42):   4 decimals → $1.4184
+// DOGE ($0.12):  5 decimals → $0.12345
+function fmtPrice(p){
+  if(!p || isNaN(p)) return "—";
+  if(p >= 1000)  return p.toFixed(2);
+  if(p >= 100)   return p.toFixed(3);
+  if(p >= 1)     return p.toFixed(4);
+  if(p >= 0.1)   return p.toFixed(5);
+  return p.toFixed(6);
+}
+
+// Smart diff formatter — same logic
+function fmtDiff(d, p){
+  const decimals = p>=1000?2 : p>=100?3 : p>=1?4 : 5;
+  const sign = d>=0 ? "+" : "";
+  return sign + d.toFixed(decimals);
+}
 
 async function fetchJson(url){
   const r = await fetch(url, { cache:"no-store" });
@@ -978,7 +1000,7 @@ function detectTraps({
       trap.warning   = "RTI price above target but projected settlement BELOW or barely above → FAKE BREAKOUT → BET NO";
       trap.detail    = [
         projBelow   ? "Projected avg BELOW target despite price being above" : "",
-        projBarelyA ? `Projected avg only $${(projectedAvg-target).toFixed(1)} above (< 0.4 ATR)` : "",
+        projBarelyA ? `Projected avg only $${fmtDiff(projectedAvg-target, price)} above (< 0.4 ATR)` : "",
         t5Rev       ? "5m trend reversed bearish while 10m still positive" : "",
         rsiOB       ? `RSI ${rsi.toFixed(0)} — overbought` : "",
         macdBearDiv ? "MACD bearish divergence" : "",
@@ -1017,7 +1039,7 @@ function detectTraps({
         trap.warning   = "RTI price below target but projected settlement ABOVE or barely below → FAKE BREAKDOWN → BET YES";
         trap.detail    = [
           projAbove   ? "Projected avg ABOVE target despite price being below" : "",
-          projBarelyB ? `Projected avg only $${(target-projectedAvg).toFixed(1)} below (< 0.4 ATR)` : "",
+          projBarelyB ? `Projected avg only $${fmtDiff(target-projectedAvg, price)} below (< 0.4 ATR)` : "",
           t5Rec       ? "5m trend recovered bullish while 10m still negative" : "",
           rsiOS       ? `RSI ${rsi.toFixed(0)} — oversold` : "",
           macdBullDiv ? "MACD bullish divergence" : "",
@@ -1444,9 +1466,25 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     else { rawDecision="WATCH ONLY"; entryTiming="FORMING — WAIT 6–3 MIN"; signalReason=coreYes?"YES forming, not strong enough yet":coreNo?"NO forming, not strong enough yet":"No clear direction yet"; }
   } else if(idealWin){
     // ALL 3 STARS MUST AGREE — if any star contradicts, it is a SKIP
+    // ── Kalshi price gate ──────────────────────────────────────────────────
+    // When Kalshi prices a side above 72¢, the market has already priced it in.
+    // Risk:Reward is worse than 3.6:1 against you — not worth betting.
+    // Sweet spot: 35–65¢ where edge exists.
+    const mktYesCents = (marketInput ?? 0) * 100;
+    const mktNoCents  = 100 - mktYesCents;
+    const kalshiPriceTooHigh = mktYesCents > 72 || mktNoCents > 72;
+    const kalshiPriceSide    = mktYesCents > 72 ? "YES" : mktNoCents > 72 ? "NO" : null;
+    const kalshiPriceValue   = kalshiPriceSide === "YES" ? mktYesCents : mktNoCents;
+
     if(spreadBlocked){
       rawDecision="SKIP"; entryTiming="HIGH SPREAD";
       signalReason=`Exchange spread $${maxSpread.toFixed(0)} ≥ $50 — prices unreliable, cannot trust signal`;
+    } else if(kalshiPriceTooHigh){
+      rawDecision="SKIP"; entryTiming="POOR ODDS";
+      signalReason=`Kalshi ${kalshiPriceSide} at ${kalshiPriceValue.toFixed(0)}¢ — market already priced this in. Win only $${((1-kalshiPriceValue/100)*10).toFixed(2)} on $10 bet. One loss wipes ${Math.round(kalshiPriceValue/(100-kalshiPriceValue))} wins. Wait for 35–65¢ range.`;
+    } else if(atr < 50 && timeLeft < 3){
+      rawDecision="SKIP"; entryTiming="LOW ATR + LATE";
+      signalReason=`ATR $${atr.toFixed(0)} with ${timeLeft.toFixed(1)} min left — one candle can flip result. Need ATR ≥ $50 or more time.`;
     } else if(!threeStarsYes && !threeStarsNo){
       rawDecision="SKIP"; entryTiming="3 STARS SPLIT";
       signalReason="Price, Candle Avg, and Projected don't all agree — too risky to bet";
@@ -1961,8 +1999,35 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
       return;
     }
 
+    // ── Odds quality warning ─────────────────────────────────────────────────
+    const yesCents2 = Math.round((yesBuyP ?? 0.5) * 100);
+    const noCents2  = 100 - yesCents2;
+    const cheapSide = yesCents2 <= noCents2 ? "YES" : "NO";
+    const cheapPrice= Math.min(yesCents2, noCents2);
+    const expRet    = (1/cheapPrice*100 - 100).toFixed(0); // % return if win
+    let oddsWarningHtml = "";
+    if(cheapPrice > 72){
+      oddsWarningHtml = `<div style="background:#200010;border:1.5px solid var(--no);border-radius:6px;
+        padding:6px 9px;margin-bottom:6px;">
+        <div style="font-size:11px;font-weight:700;color:var(--no);margin-bottom:3px;">
+          ✗ POOR ODDS — Market already priced this in
+        </div>
+        <div style="font-size:9px;color:var(--muted);line-height:1.6;">
+          Cheapest side (${cheapSide}) is ${cheapPrice}¢. You only make ${expRet}% if you win.<br>
+          One loss wipes ${Math.round(cheapPrice/(100-cheapPrice))} wins.<br>
+          <b style="color:var(--warn);">Wait for 35–65¢ range for real edge.</b>
+        </div>
+      </div>`;
+    } else if(cheapPrice >= 35 && cheapPrice <= 65){
+      oddsWarningHtml = `<div style="background:#052e16;border:1px solid var(--yes);border-radius:5px;
+        padding:4px 9px;margin-bottom:5px;font-size:9px;color:var(--yes);">
+        ✓ GOOD ODDS — ${cheapSide} at ${cheapPrice}¢ · ${expRet}% return if win · Sweet spot
+      </div>`;
+    }
+
     returnOptHtml = `<div class="card" style="padding:6px 9px;margin-bottom:5px;border:1px solid ${r.confidence>=75?"var(--yes)":"var(--border)"};">
       <div class="sec" style="margin-top:0;">💰 Return Optimizer</div>
+      ${oddsWarningHtml}
 
       <!-- Recommended bet sizing -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:6px;">
@@ -2225,11 +2290,11 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
             rti.autoFallback ? "Coinbase (auto — spread high)" :
             "RTI ("+rti.sources?.join("+")+")"}
         </div>
-        <div style="font-size:17px;font-weight:800;color:${price>target?"var(--yes)":"var(--no)"};">${price.toFixed(2)}</div>
-        <div style="font-size:9px;color:var(--muted);margin-top:1px;">Target: <span style="color:var(--text);font-weight:600;">${target.toFixed(2)}</span></div>
-        <!-- Diff = RTI - Target, green if positive, red if negative -->
+        <div style="font-size:17px;font-weight:800;color:${price>target?"var(--yes)":"var(--no)"};">${fmtPrice(price)}</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:1px;">Target: <span style="color:var(--text);font-weight:600;">${fmtPrice(target)}</span></div>
+        <!-- Diff = RTI - Target -->
         <div style="font-size:11px;font-weight:800;margin-top:2px;color:${(price-target)>=0?"var(--yes)":"var(--no)"};">
-          ${(price-target)>=0?"+":""}${(price-target).toFixed(2)}
+          ${fmtDiff(price-target, price)}
           <span style="font-size:8px;font-weight:400;color:var(--muted);">vs target</span>
         </div>
         ${rti.count===1 && !rti.autoFallback
@@ -2330,9 +2395,9 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
       <!-- Price & Settlement -->
       <div class="card" style="padding:6px 8px;">
         <div class="sec" style="margin-top:0;">Settlement</div>
-        <div class="drow"><span class="lbl">Price</span><span class="val ${price>target?"yes":"no"}">${price.toFixed(1)}</span></div>
-        <div class="drow"><span class="lbl">Target</span><span class="val">${target.toFixed(1)}</span></div>
-        <div class="drow"><span class="lbl">Proj.</span><span class="val info">${r.projectedAvg.toFixed(1)}</span></div>
+        <div class="drow"><span class="lbl">Price</span><span class="val ${price>target?"yes":"no"}">${fmtPrice(price)}</span></div>
+        <div class="drow"><span class="lbl">Target</span><span class="val">${fmtPrice(target)}</span></div>
+        <div class="drow"><span class="lbl">Proj.</span><span class="val info">${fmtPrice(r.projectedAvg)}</span></div>
         <div class="drow"><span class="lbl">Cushion</span><span class="val ${r.avgCushion>0?"yes":"no"}">${r.avgCushion>0?"+":""}${r.avgCushion.toFixed(1)}</span></div>
         <div class="drow"><span class="lbl">ATR×</span><span class="val muted">${(Math.abs(r.avgCushion)/r.atr).toFixed(2)}x</span></div>
         <div class="drow"><span class="lbl">Zone</span><span class="val ${r.targetMagnetZone?"warn":"yes"}">${r.targetMagnetZone?"⚠ Close":"✓ OK"}</span></div>
