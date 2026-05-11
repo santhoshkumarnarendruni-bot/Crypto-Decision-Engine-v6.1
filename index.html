@@ -6,7 +6,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Crypto Decision Engine v6.2</title>
+<title>Crypto Decision Engine v6.3 Strict</title>
 <style>
   :root{
     --bg:#0e0e0e; --card:#181818; --border:#252525;
@@ -80,7 +80,7 @@
 </head>
 <body>
 
-<h1>Decision Engine <span style="color:var(--info);font-weight:400;">v6.2</span>
+<h1>Decision Engine <span style="color:var(--info);font-weight:400;">v6.3 Strict</span>
   <span id="clockDisplay" style="float:right;font-size:10px;color:var(--muted);font-weight:400;"></span>
 </h1>
 
@@ -1235,16 +1235,16 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   const projectedAvg = Math.max(price - maxDrift, Math.min(price + maxDrift, rawProj));
 
   // ── Cushion ──────────────────────────────────────────────────
-  const cushionThreshold = Math.max(vol, atr) * 1.5;
+  const cushionThreshold = Math.max(vol, atr) * 2.5;
   const avgCushion       = projectedAvg - target;
   const avgDistance      = Math.abs(avgCushion);
-  const targetMagnetZone = avgDistance < cushionThreshold * 1.1;
+  const targetMagnetZone = avgDistance < cushionThreshold;
 
   // Declare cushionSignal early (needs avgCushion) — refined after score tally
   // Initial value based on cushion only; yesScore/noScore gate added after tally
   let cushionSignal = targetMagnetZone ? "MAGNET ZONE" :
-                      avgCushion >  cushionThreshold * 1.25 ? "CUSHION: YES SIDE" :
-                      avgCushion < -cushionThreshold * 1.25 ? "CUSHION: NO SIDE" :
+                      avgCushion >=  cushionThreshold ? "CUSHION: YES SIDE" :
+                      avgCushion <= -cushionThreshold ? "CUSHION: NO SIDE" :
                       "MAGNET ZONE";
   let cushionCls    = cushionSignal === "CUSHION: YES SIDE" ? "yes" :
                       cushionSignal === "CUSHION: NO SIDE"  ? "no"  : "warn";
@@ -1253,9 +1253,9 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   let yes=0.50, confidence=50;
   const reasons=[], warnings=[];
 
-  // Projected avg vs target (highest weight — this is our best settlement estimate)
-  if(projectedAvg > target){ yes+=0.16; confidence+=10; reasons.push("Projected avg ABOVE target → YES"); }
-  else                      { yes-=0.16; confidence+=10; reasons.push("Projected avg BELOW target → NO");  }
+  // Projected avg vs target (important, but NOT a guaranteed settlement value)
+  if(projectedAvg > target){ yes+=0.10; confidence+=6; reasons.push("Projected avg ABOVE target → YES"); }
+  else                      { yes-=0.10; confidence+=6; reasons.push("Projected avg BELOW target → NO");  }
 
   // Latest candle OHLC4 avg
   if(latestAvg > target){ yes+=0.09; confidence+=6; reasons.push("Latest candle avg above target"); }
@@ -1373,8 +1373,8 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
 
   // ── Cushion signal refinement (now yesScore/noScore available) ──────────────
   // Re-evaluate with score gate — overrides the early approximation
-  if(avgCushion >= cushionThreshold*1.25 && yesScore >= 6){ cushionSignal="CUSHION: YES SIDE"; cushionCls="yes"; }
-  else if(avgCushion <= -cushionThreshold*1.25 && noScore >= 6){ cushionSignal="CUSHION: NO SIDE"; cushionCls="no"; }
+  if(avgCushion >= cushionThreshold && yesScore >= 6){ cushionSignal="CUSHION: YES SIDE"; cushionCls="yes"; }
+  else if(avgCushion <= -cushionThreshold && noScore >= 6){ cushionSignal="CUSHION: NO SIDE"; cushionCls="no"; }
   else { cushionSignal="MAGNET ZONE"; cushionCls="warn"; }
 
   // ── Cushion plain-English reason ───────────────────────────────────────────
@@ -1398,16 +1398,12 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     yes, no, timeLeft
   });
 
-  // Apply trap probability + confidence adjustments
-  if(trapResult.trap.yesDelta !== 0){
-    yes = Math.max(0.05, Math.min(0.95, yes + trapResult.trap.yesDelta));
-    if(trapResult.trap.action.includes("YES") || trapResult.trap.action.includes("NO"))
-      reasons.push(`${trapResult.trap.tier===1?"VWAP":trapResult.trap.tier===2?"Projection":"RSI"} trap: ${trapResult.trap.signal}`);
-  }
-  if(trapResult.trap.confBoost !== 0)
-    confidence = Math.max(0, Math.min(100, Math.round(confidence + trapResult.trap.confBoost)));
-  if(trapResult.trap.signal !== "NONE" && (trapResult.trap.action === "WATCH" || trapResult.trap.tier === 3))
+  // Strict mode: trap signals are warnings only.
+  // They may downgrade/stop a trade, but they must NOT create a BET signal
+  // or inflate probability/confidence. This avoids false confidence from VWAP/RSI traps.
+  if(trapResult.trap.signal !== "NONE"){
     warnings.push(trapResult.trap.signal + ": " + trapResult.trap.warning);
+  }
 
   // Destructure all trap fields — NOW safe to use everywhere below
   const { earlyBias, earlyBiasClass, bearTrapBounce, bullTrapPullback,
@@ -1429,17 +1425,17 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   // ── Mode thresholds ─────────────────────────────────────────
   const thr = {
     // cushionMult raised to 2.0 minimum across all modes — 1.5 was too low based on real losses
-    conservative:{ confMin:70, yesProb:0.68, scoreMin:8, cushionMult:2.0 },
-    balanced:    { confMin:63, yesProb:0.64, scoreMin:7, cushionMult:2.0 },
-    aggressive:  { confMin:55, yesProb:0.60, scoreMin:6, cushionMult:1.8 },
-  }[aggrMode] || { confMin:63, yesProb:0.64, scoreMin:7, cushionMult:1.25 };
+    conservative:{ confMin:78, yesProb:0.70, scoreMin:8, cushionMult:1.20 },
+    balanced:    { confMin:75, yesProb:0.68, scoreMin:8, cushionMult:1.00 },
+    aggressive:  { confMin:72, yesProb:0.66, scoreMin:7, cushionMult:1.00 },
+  }[aggrMode] || { confMin:75, yesProb:0.68, scoreMin:8, cushionMult:1.00 };
 
   // ── Time windows ─────────────────────────────────────────────
   const tooEarly = timeLeft > 10;
   const earlyWin = timeLeft > 6 && timeLeft <= 10;
-  const idealWin = timeLeft <= 6 && timeLeft >= 4;   // HARD STOP at 4 min (was 2.5)
-  const lateWin  = false;                             // DISABLED — never bet under 4 min
-  const tooLate  = timeLeft < 4;                     // anything < 4 min = too late
+  const idealWin = timeLeft <= 6 && timeLeft >= 2.5; // safest entry window
+  const lateWin  = false;                            // DISABLED — never bet under 2.5 min
+  const tooLate  = timeLeft < 2.5;                   // anything < 2.5 min = too late
 
   const cushionYes = avgCushion >=  cushionThreshold * thr.cushionMult;
   const cushionNo  = avgCushion <= -cushionThreshold * thr.cushionMult;
@@ -1454,6 +1450,13 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   const probYes  = yes >= thr.yesProb;
   const probNo   = no  >= thr.yesProb;
 
+  // Strict hard gates — these must pass before any BET signal is allowed.
+  // Flip risk must be LOW and cushion must be safely outside magnet zone.
+  const strictFlipOk = flipRiskLabel === "LOW";
+  const strictCushionOk = avgDistance >= cushionThreshold * thr.cushionMult;
+  const trapBlocksBet = trapResult.trap.signal !== "NONE" &&
+    (trapResult.trap.action.includes("BET") || trapResult.trap.cls === "warn");
+
   // ── Raw decision ─────────────────────────────────────────────
   let rawDecision="SKIP", entryTiming="WAIT", signalReason="";
 
@@ -1462,7 +1465,7 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     signalReason="Extreme volatility — stay out";
   } else if(tooLate){
     rawDecision="SKIP"; entryTiming="MARKET CLOSING";
-    signalReason="Under 1 minute — Coinbase may reject bets";
+    signalReason="Under 2.5 minutes — too easy for one candle/settlement average to flip";
   } else if(tooEarly){
     rawDecision="WATCH ONLY"; entryTiming="TOO EARLY";
     signalReason="More than 10 min left — direction can still fully reverse";
@@ -1470,46 +1473,74 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     const vStrong = flipRiskRatio >= 3.0;
     const eY = coreYes && trend5Pos && trend10Pos && cushionYes && yesScore>=thr.scoreMin+1 && confOk && vStrong;
     const eN = coreNo  && !trend5Pos && !trend10Pos && cushionNo && noScore>=thr.scoreMin+1 && confOk && vStrong;
-    if(eY){ rawDecision="BET YES"; entryTiming="EARLY — VERY STRONG"; signalReason="All YES factors align early with large cushion"; }
-    else if(eN){ rawDecision="BET NO"; entryTiming="EARLY — VERY STRONG"; signalReason="All NO factors align early with large cushion"; }
-    else { rawDecision="WATCH ONLY"; entryTiming="FORMING — WAIT 6–3 MIN"; signalReason=coreYes?"YES forming, not strong enough yet":coreNo?"NO forming, not strong enough yet":"No clear direction yet"; }
+    if(eY){ rawDecision="WATCH ONLY"; entryTiming="EARLY YES — WAIT"; signalReason="YES is forming, but strict mode waits until 6–2.5 min window"; }
+    else if(eN){ rawDecision="WATCH ONLY"; entryTiming="EARLY NO — WAIT"; signalReason="NO is forming, but strict mode waits until 6–2.5 min window"; }
+    else { rawDecision="WATCH ONLY"; entryTiming="FORMING — WAIT 6–2.5 MIN"; signalReason=coreYes?"YES forming, not strong enough yet":coreNo?"NO forming, not strong enough yet":"No clear direction yet"; }
   } else if(idealWin){
     // ALL 3 STARS MUST AGREE — if any star contradicts, it is a SKIP
     // ── Kalshi price gate ──────────────────────────────────────────────────
-    // When Kalshi prices a side above 72¢, the market has already priced it in.
-    // Risk:Reward is worse than 3.6:1 against you — not worth betting.
-    // Sweet spot: 35–65¢ where edge exists.
-    const mktYesCents = (marketInput ?? 0) * 100;
-    const mktNoCents  = 100 - mktYesCents;
-    const kalshiPriceTooHigh = mktYesCents > 72 || mktNoCents > 72;
-    const kalshiPriceSide    = mktYesCents > 72 ? "YES" : mktNoCents > 72 ? "NO" : null;
-    const kalshiPriceValue   = kalshiPriceSide === "YES" ? mktYesCents : mktNoCents;
+    // IMPORTANT FIX: evaluate price ONLY for the side we are planning to buy.
+    // Example: YES may be 80¢ while NO is 20¢. That should block YES, not NO.
+    // Normal edge zone: side price <= 65¢.
+    // Safe Chase zone: 65–85¢ allowed ONLY when the setup is very strong.
+    const marketInputValid = !isNaN(marketInput) && marketInput >= 0 && marketInput <= 1;
+    const mktYesCents = marketInputValid ? marketInput * 100 : null;
+    const mktNoCents  = marketInputValid ? 100 - mktYesCents : null;
+    const strongChaseWindow = timeLeft >= 3 && timeLeft <= 5;
+    const strongChaseCushion = avgDistance >= Math.max(vol, atr) * 3.0;
+    const safeChaseYes = marketInputValid && mktYesCents > 65 && mktYesCents <= 85 &&
+      confidence >= 85 && strictFlipOk && strongChaseWindow && strongChaseCushion &&
+      coreYes && cushionYes && probYes && trend5Pos && trend10Pos && threeStarsYes && !targetMagnetZone;
+    const safeChaseNo = marketInputValid && mktNoCents > 65 && mktNoCents <= 85 &&
+      confidence >= 85 && strictFlipOk && strongChaseWindow && strongChaseCushion &&
+      coreNo && cushionNo && probNo && !trend5Pos && !trend10Pos && threeStarsNo && !targetMagnetZone;
+    const priceOkYes = !marketInputValid || mktYesCents <= 65 || safeChaseYes;
+    const priceOkNo  = !marketInputValid || mktNoCents  <= 65 || safeChaseNo;
+    const tooExpensiveYes = marketInputValid && mktYesCents > 65 && !safeChaseYes;
+    const tooExpensiveNo  = marketInputValid && mktNoCents  > 65 && !safeChaseNo;
 
     if(spreadBlocked){
       rawDecision="SKIP"; entryTiming="HIGH SPREAD";
       signalReason=`Exchange spread ${(spreadPct*100).toFixed(3)}% of price — exchanges disagree, prices unreliable. Use Coinbase-only mode.`;
-    } else if(kalshiPriceTooHigh){
-      rawDecision="SKIP"; entryTiming="POOR ODDS";
-      signalReason=`Kalshi ${kalshiPriceSide} at ${kalshiPriceValue.toFixed(0)}¢ — market already priced this in. Win only $${((1-kalshiPriceValue/100)*10).toFixed(2)} on $10 bet. One loss wipes ${Math.round(kalshiPriceValue/(100-kalshiPriceValue))} wins. Wait for 35–65¢ range.`;
     } else if((atr / price) < 0.0006 && timeLeft < 3){
       // ATR as % of price < 0.06% = very quiet market regardless of coin price
       // BTC: 0.0006 × 80000 = $48  XRP: 0.0006 × 1.42 = $0.00085
       rawDecision="SKIP"; entryTiming="LOW ATR + LATE";
       signalReason=`ATR ${(atr/price*100).toFixed(3)}% of price with ${timeLeft.toFixed(1)} min left — market too quiet, one candle can flip result.`;
+    } else if(!strictFlipOk){
+      rawDecision="SKIP"; entryTiming="FLIP RISK TOO HIGH";
+      signalReason=`Flip risk is ${flipRiskLabel}. Only LOW flip risk is allowed for real BET signals.`;
+    } else if(trapBlocksBet){
+      rawDecision="SKIP"; entryTiming="TRAP WARNING";
+      signalReason=`Trap warning active: ${trapResult.trap.signal}. Strict mode will not bet during trap conflicts.`;
     } else if(!threeStarsYes && !threeStarsNo){
       rawDecision="SKIP"; entryTiming="3 STARS SPLIT";
       signalReason="Price, Candle Avg, and Projected don't all agree — too risky to bet";
     } else if(targetMagnetZone){
       rawDecision="SKIP"; entryTiming="MAGNET ZONE";
       signalReason="Target too close to projected avg — one candle flips it";
-    } else if(coreYes && cushionYes && confOk && probYes && yesScore>=thr.scoreMin && trend5Pos && threeStarsYes){
-      rawDecision="BET YES"; entryTiming="IDEAL WINDOW"; signalReason="Strong YES: all 3 stars + VWAP + EMA + cushion 2× ATR";
-    } else if(coreNo && cushionNo && confOk && probNo && noScore>=thr.scoreMin && !trend5Pos && threeStarsNo){
-      rawDecision="BET NO"; entryTiming="IDEAL WINDOW"; signalReason="Strong NO: all 3 stars + VWAP + EMA + cushion 2× ATR";
+    } else if(coreYes && cushionYes && confOk && probYes && yesScore>=thr.scoreMin && trend5Pos && threeStarsYes && priceOkYes){
+      rawDecision="BET YES";
+      entryTiming=safeChaseYes ? "SAFE CHASE YES" : "IDEAL WINDOW";
+      signalReason=safeChaseYes
+        ? `Safe Chase YES allowed: ${mktYesCents.toFixed(0)}¢, confidence ${confidence.toFixed(0)}%, LOW flip risk, cushion ≥ 3× ATR, 3–5 min window.`
+        : "Strong YES: all 3 stars + VWAP + EMA + cushion ≥ 2.5× volatility/ATR";
+    } else if(coreNo && cushionNo && confOk && probNo && noScore>=thr.scoreMin && !trend5Pos && threeStarsNo && priceOkNo){
+      rawDecision="BET NO";
+      entryTiming=safeChaseNo ? "SAFE CHASE NO" : "IDEAL WINDOW";
+      signalReason=safeChaseNo
+        ? `Safe Chase NO allowed: ${mktNoCents.toFixed(0)}¢, confidence ${confidence.toFixed(0)}%, LOW flip risk, cushion ≥ 3× ATR, 3–5 min window.`
+        : "Strong NO: all 3 stars + VWAP + EMA + cushion ≥ 2.5× volatility/ATR";
+    } else if(coreYes && cushionYes && confOk && probYes && yesScore>=thr.scoreMin && trend5Pos && threeStarsYes && tooExpensiveYes){
+      rawDecision="SKIP"; entryTiming="EXPENSIVE YES";
+      signalReason=`YES is ${mktYesCents.toFixed(0)}¢. Safe Chase requires 85%+ confidence, LOW flip risk, 3–5 min left, and cushion ≥ 3× ATR. Conditions not strong enough.`;
+    } else if(coreNo && cushionNo && confOk && probNo && noScore>=thr.scoreMin && !trend5Pos && threeStarsNo && tooExpensiveNo){
+      rawDecision="SKIP"; entryTiming="EXPENSIVE NO";
+      signalReason=`NO is ${mktNoCents.toFixed(0)}¢. Safe Chase requires 85%+ confidence, LOW flip risk, 3–5 min left, and cushion ≥ 3× ATR. Conditions not strong enough.`;
     } else if(confOk && probYes && yesScore>=thr.scoreMin && cushionYes && threeStarsYes){
-      rawDecision="BET YES"; entryTiming="ENTER WITH CAUTION"; signalReason="YES — all 3 stars agree, supporting indicators confirm";
+      rawDecision="SKIP"; entryTiming="CAUTION — SKIP"; signalReason="YES is not strong enough for strict BET/Safe Chase rules";
     } else if(confOk && probNo && noScore>=thr.scoreMin && cushionNo && threeStarsNo){
-      rawDecision="BET NO"; entryTiming="ENTER WITH CAUTION"; signalReason="NO — all 3 stars agree, supporting indicators confirm";
+      rawDecision="SKIP"; entryTiming="CAUTION — SKIP"; signalReason="NO is not strong enough for strict BET/Safe Chase rules";
     } else {
       rawDecision="SKIP"; entryTiming="WAIT";
       signalReason=!threeStarsYes&&!threeStarsNo?"3 stars split — skip":targetMagnetZone?"Magnet zone — skip":"Mixed signals — cushion or score too low";
@@ -1544,7 +1575,7 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   if((rawDecision==="BET YES"||rawDecision==="BET NO") && idealWin && confirmCount<1){
     displayDecision="WATCH ONLY"; entryTiming="WAIT FOR CONFIRM";
   }
-  // Late window: no gate (act immediately)
+  // Late window disabled in strict mode
 
   const decisionCls = displayDecision==="BET YES"?"yes":displayDecision==="BET NO"?"no":displayDecision==="WATCH ONLY"?"warn":"skip";
   const boxCls      = displayDecision==="BET YES"?"yes-box":displayDecision==="BET NO"?"no-box":displayDecision==="WATCH ONLY"?"warn-box":"skip-box";
@@ -1555,8 +1586,8 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   const nearTarget     = Math.abs(price-target) <= safeVol*2 || targetMagnetZone;
   const bouncePoss     = rsi<=42 && rsi>=25 && (latestCandleGreen || trend5>trend10);
   const pullbackPoss   = rsi>=58 && rsi<=75 && (latestCandleRed   || trend5<trend10);
-  let scalpSignal="NO SCALP SETUP", scalpCls="muted", scalpAction="Wait.", scalpEntry="—", scalpExit="—", scalpStop="—";
-  if(timeLeft>=4 && timeLeft<=12 && !volatilityVeryHigh){
+  let scalpSignal="SCALP DISABLED FOR SETTLEMENT BETS", scalpCls="muted", scalpAction="Use only for paper tracking. Do not mix scalp signals with 15-min hold-to-expiry bets.", scalpEntry="—", scalpExit="—", scalpStop="—";
+  if(false && timeLeft>=4 && timeLeft<=12 && !volatilityVeryHigh){
     if(yesMarketCheap && nearTarget && bouncePoss){
       scalpSignal="SCALP YES"; scalpCls="yes";
       scalpAction="Buy YES cheaply — exit when probability reprices, not at settlement";
@@ -2018,16 +2049,27 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
     const cheapPrice= Math.min(yesCents2, noCents2);
     const expRet    = (1/cheapPrice*100 - 100).toFixed(0); // % return if win
     let oddsWarningHtml = "";
-    if(cheapPrice > 72){
+    if(cheapPrice > 85){
       oddsWarningHtml = `<div style="background:#200010;border:1.5px solid var(--no);border-radius:6px;
         padding:6px 9px;margin-bottom:6px;">
         <div style="font-size:11px;font-weight:700;color:var(--no);margin-bottom:3px;">
-          ✗ POOR ODDS — Market already priced this in
+          ✗ VERY POOR ODDS — Market already priced this in
         </div>
         <div style="font-size:9px;color:var(--muted);line-height:1.6;">
           Cheapest side (${cheapSide}) is ${cheapPrice}¢. You only make ${expRet}% if you win.<br>
           One loss wipes ${Math.round(cheapPrice/(100-cheapPrice))} wins.<br>
-          <b style="color:var(--warn);">Wait for 35–65¢ range for real edge.</b>
+          <b style="color:var(--warn);">Avoid unless using an exit/hedge plan.</b>
+        </div>
+      </div>`;
+    } else if(cheapPrice > 65){
+      oddsWarningHtml = `<div style="background:#1c0f00;border:1.5px solid var(--warn);border-radius:6px;
+        padding:6px 9px;margin-bottom:6px;">
+        <div style="font-size:11px;font-weight:700;color:var(--warn);margin-bottom:3px;">
+          ⚠ SAFE CHASE ZONE — Expensive, but allowed only with strict confirmation
+        </div>
+        <div style="font-size:9px;color:var(--muted);line-height:1.6;">
+          Side price is ${cheapPrice}¢. Tool will only allow this if confidence ≥85%, flip risk LOW, 3–5 min left, and cushion ≥3× ATR.<br>
+          Otherwise it will show EXPENSIVE YES/NO and skip.
         </div>
       </div>`;
     } else if(cheapPrice >= 35 && cheapPrice <= 65){
