@@ -6,7 +6,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Crypto Decision Engine v6.3 Strict</title>
+<title>Crypto Decision Engine v6.4 HTF Bias</title>
 <style>
   :root{
     --bg:#0e0e0e; --card:#181818; --border:#252525;
@@ -484,6 +484,85 @@ function VOL(closes){
 function getPriceAgo(candles, mins){
   const t=Date.now()-mins*60000;
   return candles.reduce((p,c)=>Math.abs(c.time-t)<Math.abs(p.time-t)?c:p).close;
+}
+
+
+// ─── Higher Time Frame Bias (HTF) ────────────────────────────────────────────
+// Uses last 30/60/120 minutes as CONTEXT only. It should never create an early
+// BET by itself. It helps decide whether early signals are worth watching and
+// blocks ideal-window bets that fight a strong higher-timeframe trend.
+function computeHTFBias(candles1m, price, atr){
+  const closes = candles1m.map(c=>c.close);
+  const last = candles1m[candles1m.length-1];
+  const c30  = candles1m.length >= 31  ? candles1m[candles1m.length-31].close  : getPriceAgo(candles1m, 30);
+  const c60  = candles1m.length >= 61  ? candles1m[candles1m.length-61].close  : getPriceAgo(candles1m, 60);
+  const c120 = candles1m.length >= 121 ? candles1m[candles1m.length-121].close : getPriceAgo(candles1m, 120);
+
+  const trend30  = price - c30;
+  const trend60  = price - c60;
+  const trend120 = price - c120;
+
+  const candles60  = candles1m.slice(-60);
+  const candles120 = candles1m.slice(-120);
+  const vwap60 = VWAP(candles60.length ? candles60 : candles1m);
+  const ema60  = EMA(closes.slice(-90), 60);
+
+  const high60 = Math.max(...candles60.map(c=>c.high));
+  const low60  = Math.min(...candles60.map(c=>c.low));
+  const range60 = Math.max(high60-low60, 0.0001);
+  const rangePos = (price - low60) / range60; // 0=near low, 1=near high
+
+  const avgVol60 = candles60.slice(0,-1).reduce((s,c)=>s+c.volume,0) / Math.max(1,candles60.length-1);
+  const volumeSpike60 = last.volume > avgVol60 * 1.5;
+
+  const body = Math.abs(last.close-last.open);
+  const rng  = Math.max(last.high-last.low, 0.0001);
+  const upperWick = last.high - Math.max(last.open,last.close);
+  const lowerWick = Math.min(last.open,last.close) - last.low;
+  const upperWickRisk = upperWick / rng > 0.45;
+  const lowerWickRisk = lowerWick / rng > 0.45;
+
+  const normalAtr = ATR(candles120.length ? candles120 : candles1m);
+  const atrExpansion = normalAtr ? atr / normalAtr : 1;
+  const move60Abs = Math.abs(trend60);
+  const extendedMove = move60Abs > Math.max(atr, normalAtr, 0.0001) * 3;
+
+  let score = 0;
+  const parts = [];
+  function add(cond, labelYes, labelNo, wt=1){
+    if(cond === true){ score += wt; parts.push('+'+wt+' '+labelYes); }
+    else if(cond === false){ score -= wt; parts.push('-'+wt+' '+labelNo); }
+  }
+
+  add(trend30 > 0,  '30m up',  '30m down', 1);
+  add(trend60 > 0,  '60m up',  '60m down', 1);
+  add(trend120 > 0, '120m up', '120m down', 1);
+  add(price > vwap60, 'above 1h VWAP', 'below 1h VWAP', 1);
+  add(price > ema60,  'above 1h EMA',  'below 1h EMA', 1);
+
+  // Breakout / breakdown context from the 1h range
+  if(rangePos >= 0.82){ score += volumeSpike60 ? 1 : 0.5; parts.push(volumeSpike60 ? '+1 near/breaking 1h high with volume' : '+0.5 near 1h high'); }
+  if(rangePos <= 0.18){ score -= volumeSpike60 ? 1 : 0.5; parts.push(volumeSpike60 ? '-1 near/breaking 1h low with volume' : '-0.5 near 1h low'); }
+
+  // Wick rejection is a danger filter, not a main trend signal
+  if(upperWickRisk){ score -= 1; parts.push('-1 upper wick rejection'); }
+  if(lowerWickRisk){ score += 1; parts.push('+1 lower wick rejection'); }
+
+  const direction = score >= 4 ? 'YES' : score <= -4 ? 'NO' : 'NEUTRAL';
+  const strength = Math.abs(score) >= 5 ? 'STRONG' : Math.abs(score) >= 4 ? 'GOOD' : Math.abs(score) >= 3 ? 'MILD' : 'WEAK';
+  const label = direction === 'YES' ? 'HTF BIAS YES' : direction === 'NO' ? 'HTF BIAS NO' : 'HTF NEUTRAL';
+  const cls = direction === 'YES' ? 'yes' : direction === 'NO' ? 'no' : 'warn';
+
+  let warning = '';
+  if(extendedMove) warning = 'Extended 60m move — avoid early chase; wait for 15m confirmation.';
+  if(atrExpansion > 1.4) warning = (warning ? warning + ' ' : '') + 'ATR expanding — require larger cushion.';
+
+  return {
+    score, direction, strength, label, cls, parts,
+    trend30, trend60, trend120, vwap60, ema60,
+    high60, low60, rangePos, volumeSpike60,
+    upperWickRisk, lowerWickRisk, atrExpansion, extendedMove, warning
+  };
 }
 
 // ─── Blended RTI Fetch ────────────────────────────────────────────────────────
@@ -1151,7 +1230,7 @@ function detectTraps({
 }
 
 function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr,
-                   p5, p10, p15, latestAvg, aggrMode, maxSpread=0 }){
+                   p5, p10, p15, latestAvg, aggrMode, maxSpread=0, htfBias=null }){
 
   const timeLeft      = getTimeLeftMin();
   // Spread block: use percentage of price so it works for any coin
@@ -1284,6 +1363,10 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   if(price>vwap){ yes+=0.04; reasons.push("RTI price above VWAP"); }
   else          { yes-=0.04; reasons.push("RTI price below VWAP"); }
 
+  // HTF Bias = supporting context only. Small nudge, never a standalone BET.
+  if(htfBias && htfBias.direction === "YES"){ yes+=0.03; confidence+=2; reasons.push("HTF Bias supports YES"); }
+  else if(htfBias && htfBias.direction === "NO"){ yes-=0.03; confidence+=2; reasons.push("HTF Bias supports NO"); }
+
   // Candle direction + body strength
   if(latestCandleGreen)     { yes+=strongCandle?0.05:0.03; reasons.push(strongCandle?"Strong green candle":"Green candle"); }
   else if(latestCandleRed)  { yes-=strongCandle?0.05:0.03; reasons.push(strongCandle?"Strong red candle":"Red candle"); }
@@ -1358,6 +1441,7 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
   vote("5m+10m Trend",         (trend5Pos&&trend10Pos)?true:(!trend5Pos&&!trend10Pos)?false:null, false);
   vote("EMA 9 vs 21",          ema9>ema21 ? true : false,                                     false);
   vote("VWAP",                 price>vwap ? true : false,                                     false);
+  vote("HTF Bias",             htfBias?.direction==="YES"?true:htfBias?.direction==="NO"?false:null, false);
   vote("Candle Color",         latestCandleGreen?true:latestCandleRed?false:null,             false);
   vote("RSI",                  (rsi>52&&rsi<70)?true:(rsi<48&&rsi>30)?false:null,             false);
   vote("MACD",                 macdBullish===true?true:macdBullish===false?false:null,        false);
@@ -1467,8 +1551,17 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     rawDecision="SKIP"; entryTiming="MARKET CLOSING";
     signalReason="Under 2.5 minutes — too easy for one candle/settlement average to flip";
   } else if(tooEarly){
-    rawDecision="WATCH ONLY"; entryTiming="TOO EARLY";
-    signalReason="More than 10 min left — direction can still fully reverse";
+    rawDecision="WATCH ONLY";
+    if(htfBias?.direction === "YES"){
+      entryTiming="EARLY HTF YES — WAIT";
+      signalReason=`${htfBias.label}: ${htfBias.strength} higher-timeframe support. Do not bet yet; wait for 15m confirmation inside 6–2.5 min.`;
+    } else if(htfBias?.direction === "NO"){
+      entryTiming="EARLY HTF NO — WAIT";
+      signalReason=`${htfBias.label}: ${htfBias.strength} higher-timeframe support. Do not bet yet; wait for 15m confirmation inside 6–2.5 min.`;
+    } else {
+      entryTiming="TOO EARLY";
+      signalReason="More than 10 min left — direction can still fully reverse; HTF has no strong edge";
+    }
   } else if(earlyWin){
     const vStrong = flipRiskRatio >= 3.0;
     const eY = coreYes && trend5Pos && trend10Pos && cushionYes && yesScore>=thr.scoreMin+1 && confOk && vStrong;
@@ -1498,6 +1591,8 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     const priceOkNo  = !marketInputValid || mktNoCents  <= 65 || safeChaseNo;
     const tooExpensiveYes = marketInputValid && mktYesCents > 65 && !safeChaseYes;
     const tooExpensiveNo  = marketInputValid && mktNoCents  > 65 && !safeChaseNo;
+    const htfBlocksYes = htfBias?.direction === "NO" && Math.abs(htfBias.score) >= 4;
+    const htfBlocksNo  = htfBias?.direction === "YES" && Math.abs(htfBias.score) >= 4;
 
     if(spreadBlocked){
       rawDecision="SKIP"; entryTiming="HIGH SPREAD";
@@ -1507,6 +1602,12 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
       // BTC: 0.0006 × 80000 = $48  XRP: 0.0006 × 1.42 = $0.00085
       rawDecision="SKIP"; entryTiming="LOW ATR + LATE";
       signalReason=`ATR ${(atr/price*100).toFixed(3)}% of price with ${timeLeft.toFixed(1)} min left — market too quiet, one candle can flip result.`;
+    } else if(threeStarsYes && htfBlocksYes){
+      rawDecision="SKIP"; entryTiming="HTF CONFLICT";
+      signalReason=`15m leans YES but higher timeframe bias is NO (${htfBias.score.toFixed(1)}). Skip instead of fighting the 1–2h trend.`;
+    } else if(threeStarsNo && htfBlocksNo){
+      rawDecision="SKIP"; entryTiming="HTF CONFLICT";
+      signalReason=`15m leans NO but higher timeframe bias is YES (${htfBias.score.toFixed(1)}). Skip instead of fighting the 1–2h trend.`;
     } else if(!strictFlipOk){
       rawDecision="SKIP"; entryTiming="FLIP RISK TOO HIGH";
       signalReason=`Flip risk is ${flipRiskLabel}. Only LOW flip risk is allowed for real BET signals.`;
@@ -1737,7 +1838,7 @@ function analyze({ product, price, target, marketInput, candles1m, rsi, vol, atr
     vwapOverride, returnOpt,
     trapSignal, trapCls, trapWarning, trapDetail, trapConflict, bullScore, bearScore,
     strongCushionYes, strongCushionNo, bullTrapPossible, bearTrapPossible,
-    trendConsensus, momentumNudge, urgency
+    trendConsensus, momentumNudge, urgency, htfBias
   };
 }
 
@@ -1809,6 +1910,7 @@ async function runOnce(){
     const p15     = getPriceAgo(candles1m, 15);
     const latest  = candles1m[candles1m.length-1];
     const latestAvg = ohlc4(latest);
+    const htfBias = computeHTFBias(candles1m, price, atr);
 
     // Use fresh Kalshi market probability as marketInput if available
     // ── Kalshi market input guard ────────────────────────────────────────────
@@ -1869,7 +1971,7 @@ async function runOnce(){
 
     const r = analyze({ product, price, target, marketInput: effectiveMarketInput,
                         candles1m, rsi, vol, atr, p5, p10, p15, latestAvg, aggrMode,
-                        maxSpread: rtiData.maxSpread ?? 0 });
+                        maxSpread: rtiData.maxSpread ?? 0, htfBias });
 
     lastRefreshTime = new Date();
     // Store kalshiLive globally so updatePayoutPreview can access freshest prices
@@ -1933,6 +2035,38 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
       ${r.strongCushionYes?` · <span class="yes">Strong YES cushion blocks bull trap</span>`:""}
       ${r.strongCushionNo?` · <span class="no">Strong NO cushion blocks bear trap</span>`:""}
     </div>`;
+
+  // HTF Bias card
+  const htf = r.htfBias;
+  const htfCol = htf?.cls === "yes" ? "var(--yes)" : htf?.cls === "no" ? "var(--no)" : "var(--warn)";
+  const htfBg  = htf?.cls === "yes" ? "#052e16" : htf?.cls === "no" ? "#450a0a" : "#1c1400";
+  const htfHtml = htf ? `
+    <div class="card" style="padding:6px 9px;margin-bottom:5px;border:1.5px solid ${htfCol};background:${htfBg};">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+        <div style="font-size:11px;font-weight:800;color:${htfCol};">📊 ${htf.label}</div>
+        <div style="font-size:10px;color:${htfCol};font-weight:700;">Score ${htf.score.toFixed(1)} · ${htf.strength}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:4px;">
+        <div style="background:#0a0a0a;border:1px solid var(--border);border-radius:5px;padding:3px 5px;text-align:center;">
+          <div style="font-size:8px;color:var(--muted);">30m</div>
+          <div style="font-size:11px;font-weight:700;color:${htf.trend30>=0?'var(--yes)':'var(--no)'};">${fmtDiff(htf.trend30, price)}</div>
+        </div>
+        <div style="background:#0a0a0a;border:1px solid var(--border);border-radius:5px;padding:3px 5px;text-align:center;">
+          <div style="font-size:8px;color:var(--muted);">60m</div>
+          <div style="font-size:11px;font-weight:700;color:${htf.trend60>=0?'var(--yes)':'var(--no)'};">${fmtDiff(htf.trend60, price)}</div>
+        </div>
+        <div style="background:#0a0a0a;border:1px solid var(--border);border-radius:5px;padding:3px 5px;text-align:center;">
+          <div style="font-size:8px;color:var(--muted);">120m</div>
+          <div style="font-size:11px;font-weight:700;color:${htf.trend120>=0?'var(--yes)':'var(--no)'};">${fmtDiff(htf.trend120, price)}</div>
+        </div>
+      </div>
+      <div style="font-size:8.8px;color:var(--muted);line-height:1.45;">
+        1h VWAP ${fmtPrice(htf.vwap60)} · 1h EMA ${fmtPrice(htf.ema60)} · Range pos ${(htf.rangePos*100).toFixed(0)}%
+        ${htf.volumeSpike60?' · Volume spike':''}${htf.extendedMove?' · Extended move':''}
+      </div>
+      ${htf.warning?`<div style="font-size:9px;color:var(--warn);margin-top:3px;">⚠ ${htf.warning}</div>`:''}
+      <div style="font-size:8px;color:var(--muted);margin-top:3px;">${htf.parts.slice(0,6).join(' · ')}</div>
+    </div>` : '';
 
   const refreshNote = lastRefreshTime
     ? `<div style="font-size:11px;color:var(--muted);margin-top:8px;">Updated ${lastRefreshTime.toLocaleTimeString()} ${isAuto?"· auto "+$("refreshRate").value+"s":""}</div>`
@@ -2376,6 +2510,9 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
     <!-- KALSHI LIVE MARKET PRICES -->
     ${kalshiHtml}
 
+    <!-- HIGHER TIME FRAME BIAS -->
+    ${htfHtml}
+
     <!-- ROW 2: YES/NO compact with inline vote tags -->
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:4px;">
 
@@ -2412,6 +2549,7 @@ function renderResult(r, rti, kalshiLive, product, price, target, rsi, vol){
       <span class="chip chip-muted">${r.confirmCount}/2✓</span>
       <span class="chip chip-info">${$("aggrMode").value}</span>
       <span class="chip chip-muted">Mkt ${(r.marketYes*100).toFixed(0)}/${(r.marketNo*100).toFixed(0)}%</span>
+      ${r.htfBias?`<span class="chip chip-${r.htfBias.cls}">HTF ${r.htfBias.direction} ${r.htfBias.score.toFixed(1)}</span>`:""}
       ${r.trapSignal!=="NONE" ?
         r.trapSignal.includes("DETECTED") ?
           `<span class="chip chip-${r.trapCls}" style="font-weight:800;">
